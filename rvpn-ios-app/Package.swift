@@ -18,14 +18,5 @@ let package = Package(
             name: "rvpn-ios-app",
             path: "Sources/rvpn-ios-app",
             linkerSettings: engineLinker
-        ),
-        .executableTarget(
-            name: "rvpn-tunnel-provider",
-            path: "Sources/rvpn-tunnel-provider",
-            linkerSettings: engineLinker + [
-                // Extension host runtime: provides main() for app extensions
-                .linkedFramework("ExtensionFoundation"),
-            ]
-        ),
-    ]
+        ),    ]
 )

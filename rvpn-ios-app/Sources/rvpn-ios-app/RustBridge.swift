@@ -1,4 +1,5 @@
 import Foundation
+// The C header is exposed via module.modulemap
 
 // MARK: - Rust FFI Bridge
 

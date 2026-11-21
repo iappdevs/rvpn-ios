@@ -1,0 +1,5 @@
+module rvpn_bridge {
+    header "rvpn_bridge.h"
+    link "rvpn_mobile"
+    export *
+}

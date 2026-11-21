@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import NetworkExtension
 import os
@@ -7,124 +8,195 @@ import os
 /// Bridges the system utun device to the Rust rVPN engine:
 /// packetFlow reads -> rvpn_tun_write_packet, engine -> packetFlow writes.
 class RVPNTunnelProvider: NEPacketTunnelProvider {
-    private let log = OSLog(subsystem: "org.rvpn.ios.tunnel", category: "engine")
+    private let tunnelQueue = DispatchQueue(label: "org.rvpn.ios.tunnel")
+    private let pumpGroup = DispatchGroup()
     private var pumpThread: Thread?
+    private var tunnelID: UUID?
+    private var startCompletion: ((Error?) -> Void)?
 
     override func startTunnel(
         options: [String: NSObject]? = nil,
         completionHandler: @escaping (Error?) -> Void
     ) {
+        tunnelQueue.async {
+            guard self.tunnelID == nil else {
+                completionHandler(self.tunnelError("Tunnel is already starting or active"))
+                return
+            }
+            let id = UUID()
+            self.tunnelID = id
+            self.startCompletion = completionHandler
+            self.startEngine(id: id)
+        }
+    }
+
+    private func startEngine(id: UUID) {
         os_log("[RVPN-TUNNEL] startTunnel called", type: .info)
         guard let providerConfig = (protocolConfiguration as? NETunnelProviderProtocol)?
             .providerConfiguration,
-            var config = providerConfig["engineConfig"] as? String,
+            let configJSON = providerConfig["engineConfig"] as? String,
             let identity = providerConfig["identityKey"] as? String,
-            let prekey = providerConfig["prekeyBundle"] as? String
+            let prekey = providerConfig["prekeyBundle"] as? String,
+            !identity.isEmpty, !prekey.isEmpty
         else {
-            os_log("[RVPN-TUNNEL] incomplete providerConfiguration", type: .error)
-            completionHandler(NSError(domain: "org.rvpn.ios.tunnel", code: 1, userInfo: [NSLocalizedDescriptionKey: "missing engineConfig"]))
+            finishStart(tunnelError("VPN profile is missing its configuration or key files"))
             return
         }
-        // Materialise identity/prekey inside THIS process's sandbox.
-        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let identityURL = dir.appendingPathComponent("identity.key")
-        let prekeyURL = dir.appendingPathComponent("prekey-bundle.json")
+        guard var config = (try? JSONSerialization.jsonObject(with: Data(configJSON.utf8))) as? [String: Any] else {
+            finishStart(tunnelError("Invalid VPN engine configuration"))
+            return
+        }
+
+        let files = FileManager.default
         do {
+            let dir = try files.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+            let identityURL = dir.appendingPathComponent("identity.key")
+            let prekeyURL = dir.appendingPathComponent("prekey-bundle.json")
             try identity.write(to: identityURL, atomically: true, encoding: .utf8)
             try prekey.write(to: prekeyURL, atomically: true, encoding: .utf8)
+
+            // Overwrite the parsed fields, including paths kept by older saved profiles.
+            config["identityKeyPath"] = identityURL.path
+            config["prekeyBundlePath"] = prekeyURL.path
         } catch {
-            os_log("[RVPN-TUNNEL] cannot write key files: %{public}@", type: .error, "\(error)")
-            completionHandler(NSError(domain: "org.rvpn.ios.tunnel", code: 3, userInfo: [NSLocalizedDescriptionKey: "\(error)"]))
+            finishStart(tunnelError("Could not stage VPN key files"))
             return
         }
-        config = config.replacingOccurrences(of: "RVPN_IDENTITY_PLACEHOLDER", with: identityURL.path)
-        config = config.replacingOccurrences(of: "RVPN_PREKEY_PLACEHOLDER", with: prekeyURL.path)
-        let idSize = (try? FileManager.default.attributesOfItem(atPath: identityURL.path)[.size] as? Int) ?? -1
-        let pkSize = (try? FileManager.default.attributesOfItem(atPath: prekeyURL.path)[.size] as? Int) ?? -1
-        let idFirst = (try? String(contentsOf: identityURL, encoding: .utf8))?.prefix(20) ?? "?"
-        os_log("[RVPN-TUNNEL] staged identity=%{public}@ (%d bytes, first=%{public}@) prekey=%d bytes", type: .info, identityURL.lastPathComponent, idSize, String(idFirst), pkSize)
-        if config.contains("PLACEHOLDER") {
-            os_log("[RVPN-TUNNEL] ERROR: placeholder still in config — path replace failed!", type: .error)
+        guard let configData = try? JSONSerialization.data(withJSONObject: config) else {
+            finishStart(tunnelError("Could not encode VPN engine configuration"))
+            return
         }
-        os_log("[RVPN-TUNNEL] engineConfig=%{public}@", type: .info, config)
 
-        // 1) boot the engine (verbose logs + full runtime init first)
         setenv("RVPN_LOG_LEVEL", "info", 1)
-        RustBridge.initialize()
-        if let error = RustBridge.start(configJSON: config) {
-            os_log("[RVPN-TUNNEL] engine start failed: %{public}@", type: .error, error)
-            completionHandler(NSError(domain: "org.rvpn.ios.tunnel", code: 2, userInfo: [NSLocalizedDescriptionKey: error]))
+        guard RustBridge.initialize() == 0 else {
+            finishStart(tunnelError(RustBridge.takeError() ?? "Could not initialize the VPN engine"))
             return
         }
-        os_log("[RVPN-TUNNEL] engine started", type: .info)
+        if let error = RustBridge.start(configJSON: String(decoding: configData, as: UTF8.self)) {
+            finishStart(tunnelError(error))
+            return
+        }
+        os_log("[RVPN-TUNNEL] engine started; waiting for the server", type: .info)
+        waitForAssignment(id: id, deadline: .now() + .seconds(20), dnsServers: config["dnsServers"] as? [String])
+    }
 
-        // 2) configure the virtual interface
-        let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: "127.0.0.1")
-        let ipv4 = NEIPv4Settings(addresses: ["10.200.0.4"], subnetMasks: ["255.255.255.0"])
-        ipv4.includedRoutes = [NEIPv4Route.default()]
-        ipv4.excludedRoutes = [
-            NEIPv4Route(destinationAddress: serverHostIP(), subnetMask: "255.255.255.255"),
-        ]
-        settings.ipv4Settings = ipv4
-        settings.dnsSettings = NEDNSSettings(servers: ["1.1.1.1", "8.8.8.8"])
-        settings.mtu = 1420
-
-        setTunnelNetworkSettings(settings) { error in
-            if let error {
-                os_log("[RVPN-TUNNEL] network settings error: %{public}@", type: .error, "\(error)")
-                completionHandler(error)
+    private func waitForAssignment(id: UUID, deadline: DispatchTime, dnsServers: [String]?) {
+        guard tunnelID == id else { return }
+        if RustBridge.engineState == .connected, let ip = RustBridge.tunnelIP {
+            let mtu = RustBridge.mtu
+            if mtu > 0 {
+                applyNetworkSettings(id: id, address: ip, mtu: mtu, dnsServers: dnsServers)
                 return
             }
-            os_log("[RVPN-TUNNEL] tunnel settings applied", type: .info)
-            // 3) pump packets both ways until the tunnel stops
-            self.startPump()
-            completionHandler(nil)
+        }
+        guard DispatchTime.now() < deadline else {
+            finishStart(tunnelError("VPN server did not assign a tunnel address within 20 seconds"))
+            return
+        }
+        tunnelQueue.asyncAfter(deadline: .now() + .milliseconds(100)) {
+            self.waitForAssignment(id: id, deadline: deadline, dnsServers: dnsServers)
         }
     }
 
-    /// Best-effort server IP for the bypass route; 0.0.0.0 keeps default routing.
-    private func serverHostIP() -> String {
-        RustBridge.serverIP ?? "0.0.0.0"
-    }
+    private func applyNetworkSettings(id: UUID, address: String, mtu: Int32, dnsServers: [String]?) {
+        let serverIP = RustBridge.serverIP
+        let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: serverIP ?? "127.0.0.1")
+        let ipv4 = NEIPv4Settings(addresses: [address], subnetMasks: ["255.255.255.255"])
+        ipv4.includedRoutes = [NEIPv4Route.default()]
+        var ipv4Address = in_addr()
+        if let serverIP, inet_pton(AF_INET, serverIP, &ipv4Address) == 1 {
+            ipv4.excludedRoutes = [NEIPv4Route(destinationAddress: serverIP, subnetMask: "255.255.255.255")]
+        }
+        settings.ipv4Settings = ipv4
+        let resolvers = dnsServers ?? []
+        settings.dnsSettings = NEDNSSettings(servers: resolvers.isEmpty ? ["1.1.1.1", "8.8.8.8"] : resolvers)
+        settings.mtu = NSNumber(value: mtu)
 
-    private func startPump() {
-        readLoop()
-        pumpThread = Thread {
-            var buffer = [UInt8](repeating: 0, count: 65536)
-            while true {
-                if RustBridge.waitForPacket(timeoutMs: 500) == 1 {
-                    let count = RustBridge.readPacket(into: &buffer)
-                    if count > 0 {
-                        let data = Data(buffer[0..<count])
-                        self.packetFlow.writePackets([data], withProtocols: [AF_INET as NSNumber])
-                    }
+        setTunnelNetworkSettings(settings) { error in
+            self.tunnelQueue.async {
+                guard self.tunnelID == id else { return }
+                if let error {
+                    self.finishStart(error)
+                    return
                 }
+                self.startPump(id: id)
+                os_log("[RVPN-TUNNEL] tunnel settings applied and packet pump running", type: .info)
+                self.finishStart(nil)
             }
         }
-        pumpThread?.name = "rvpn-pump"
-        pumpThread?.start()
-        os_log("[RVPN-TUNNEL] pump loops running", type: .info)
+    }
+
+    private func finishStart(_ error: Error?) {
+        let completion = startCompletion
+        startCompletion = nil
+        if let error {
+            os_log("[RVPN-TUNNEL] startup failed: %{public}@", type: .error, error.localizedDescription)
+            stopEngine()
+        }
+        completion?(error)
+    }
+
+    private func tunnelError(_ message: String) -> NSError {
+        NSError(domain: "org.rvpn.ios.tunnel", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+    }
+
+    private func startPump(id: UUID) {
+        readLoop(id: id)
+        pumpGroup.enter()
+        let thread = Thread {
+            defer { self.pumpGroup.leave() }
+            var buffer = [UInt8](repeating: 0, count: 65536)
+            while !Thread.current.isCancelled {
+                guard RustBridge.waitForPacket(timeoutMs: 250) == 1,
+                      !Thread.current.isCancelled else { continue }
+                let count = RustBridge.readPacket(into: &buffer)
+                guard count > 0 else { continue }
+                let data = Data(buffer.prefix(count))
+                _ = self.packetFlow.writePackets([data], withProtocols: [NSNumber(value: AF_INET)])
+            }
+        }
+        pumpThread = thread
+        thread.name = "rvpn-pump"
+        thread.start()
     }
 
     /// device -> engine, re-arming after every batch.
-    private func readLoop() {
+    private func readLoop(id: UUID) {
         packetFlow.readPackets { [weak self] packets, _ in
-            for packet in packets {
-                packet.withUnsafeBytes { raw in
-                    _ = RustBridge.writePacket(raw)
+            guard let self else { return }
+            self.tunnelQueue.async {
+                guard self.tunnelID == id else { return }
+                for packet in packets {
+                    packet.withUnsafeBytes { raw in
+                        _ = RustBridge.writePacket(raw)
+                    }
                 }
+                self.readLoop(id: id)
             }
-            self?.readLoop()
         }
+    }
+
+    private func stopEngine() {
+        tunnelID = nil
+        pumpThread?.cancel()
+        pumpGroup.wait()
+        pumpThread = nil
+        RustBridge.stop()
     }
 
     override func stopTunnel(
         with reason: NEProviderStopReason,
         completionHandler: @escaping () -> Void
     ) {
-        os_log("[RVPN-TUNNEL] stopTunnel reason=%ld", type: .info, reason.rawValue)
-        RustBridge.stop()
-        completionHandler()
+        tunnelQueue.async {
+            os_log("[RVPN-TUNNEL] stopTunnel reason=%ld", type: .info, reason.rawValue)
+            if self.startCompletion != nil {
+                self.finishStart(self.tunnelError("VPN startup cancelled"))
+            } else {
+                self.stopEngine()
+            }
+            completionHandler()
+        }
     }
 }
 

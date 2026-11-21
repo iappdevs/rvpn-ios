@@ -42,7 +42,8 @@ struct ConnectView: View {
     }
 
     private var statusCard: some View {
-        VStack(spacing: 16) {
+        let canDisconnect = state.connectionState == .connected || state.connectionState == .connecting
+        return VStack(spacing: 16) {
             Circle()
                 .fill(statusColor)
                 .frame(width: 88, height: 88)
@@ -67,7 +68,7 @@ struct ConnectView: View {
             }
 
             Button {
-                if state.connectionState == .connected || state.connectionState == .connecting {
+                if canDisconnect {
                     os_log("[RVPN] ui disconnect tapped", type: .info)
                     state.disconnect()
                 } else if let profile = state.activeProfile {
@@ -75,15 +76,14 @@ struct ConnectView: View {
                     state.connect(profile: profile)
                 }
             } label: {
-                Text(state.connectionState == .connected || state.connectionState == .connecting
-                     ? "Disconnect" : "Connect")
+                Text(canDisconnect ? "Disconnect" : "Connect")
                     .font(.headline)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 14)
             }
             .buttonStyle(.borderedProminent)
             .tint(state.connectionState == .connected ? .red : .blue)
-            .disabled(state.activeProfile == nil)
+            .disabled(state.connectionState == .disconnecting || (!canDisconnect && state.activeProfile == nil))
         }
         .padding()
         .background(RoundedRectangle(cornerRadius: 16).fill(.background))
@@ -126,6 +126,7 @@ struct ConnectView: View {
         switch state.connectionState {
         case .connected: return .green
         case .connecting: return .orange
+        case .disconnecting: return .orange
         case .failed: return .red
         case .disconnected: return .gray
         }

@@ -1,4 +1,5 @@
 import Foundation
+import NetworkExtension
 import os
 import SwiftUI
 
@@ -9,6 +10,7 @@ final class AppState: ObservableObject {
         case disconnected
         case connecting
         case connected
+        case disconnecting
         case failed(String)
 
         var label: String {
@@ -16,6 +18,7 @@ final class AppState: ObservableObject {
             case .disconnected: return "Disconnected"
             case .connecting: return "Connecting…"
             case .connected: return "Connected"
+            case .disconnecting: return "Disconnecting…"
             case .failed: return "Failed"
             }
         }
@@ -34,6 +37,9 @@ final class AppState: ObservableObject {
     @Published var lastError: String?
 
     private var statsTimer: Timer?
+    private var vpnManager: NETunnelProviderManager?
+    private var vpnSetup: Task<Void, Never>?
+    private var systemVPNObserver: NSObjectProtocol?
     /// Keeps sockets alive ~30 s when the app moves to the background.
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
 
@@ -47,8 +53,36 @@ final class AppState: ObservableObject {
         setenv("RVPN_LOG_LEVEL", "info", 1)
         RustBridge.initialize()
         os_log("[RVPN] app init (engine runtime up, RVPN_LOG_LEVEL=info)", type: .info)
-        startStatsPolling()
-        observeLifecycle()
+        if VPNManager.extensionAvailable {
+            observeSystemVPN()
+        } else {
+            startStatsPolling()
+            observeLifecycle()
+        }
+    }
+
+    deinit {
+        if let systemVPNObserver {
+            NotificationCenter.default.removeObserver(systemVPNObserver)
+        }
+    }
+
+    private func observeSystemVPN() {
+        systemVPNObserver = NotificationCenter.default.addObserver(
+            forName: .NEVPNStatusDidChange, object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let connection = notification.object as? NEVPNConnection else { return }
+            Task { @MainActor in
+                guard let self, self.vpnManager?.connection === connection else { return }
+                self.refreshSystemVPN(connection)
+            }
+        }
+        Task {
+            let savedManager = try? await VPNManager.existingManager()
+            guard vpnSetup == nil, vpnManager == nil, let savedManager else { return }
+            vpnManager = savedManager
+            refreshSystemVPN(savedManager.connection)
+        }
     }
 
     /// Mark every interesting transition in the unified log so a device
@@ -78,25 +112,69 @@ final class AppState: ObservableObject {
     // MARK: - Connection
 
     func connect(profile: Profile) {
-        if case .connected = connectionState { return }
-        if case .connecting = connectionState { return }
+        guard vpnSetup == nil, connectionState != .connected,
+              connectionState != .connecting, connectionState != .disconnecting else { return }
         activeProfileSlug = profile.slug
         connectionState = .connecting
         lastError = nil
 
-        // Provisioning + engine start run off the main thread; the engine
-        // logs and connects on its own tokio runtime.
-        os_log("[RVPN] connect requested for %{public}@ (%{public}@)", type: .info, profile.name, profile.serverAddress)
-        VPNManager.connect(profile: profile) { [weak self] error in
-            Task { @MainActor in
-                if let error {
-                    os_log("[RVPN] system tunnel unavailable (%{public}@) — in-app engine fallback", type: .error, error)
-                    self?.startInAppEngine(profile: profile)
-                } else {
-                    os_log("[RVPN] using system tunnel", type: .info)
-                    self?.connectionState = .connecting
+        guard VPNManager.extensionAvailable else {
+            startInAppEngine(profile: profile)
+            return
+        }
+        vpnSetup = Task {
+            defer { vpnSetup = nil }
+            do {
+                let manager = try await VPNManager.prepare(profile: profile)
+                try Task.checkCancellation()
+                vpnManager = manager
+                guard let session = manager.connection as? NETunnelProviderSession else {
+                    let message = "The system VPN session is unavailable."
+                    lastError = message
+                    connectionState = .failed(message)
+                    return
+                }
+                guard session.status == .disconnected || session.status == .invalid else {
+                    refreshSystemVPN(session)
+                    return
+                }
+                try session.startTunnel()
+                os_log("[RVPN] system tunnel start requested", type: .info)
+            } catch {
+                guard !Task.isCancelled else { return }
+                lastError = error.localizedDescription
+                connectionState = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    private func refreshSystemVPN(_ connection: NEVPNConnection) {
+        switch connection.status {
+        case .connected:
+            lastError = nil
+            connectionState = .connected
+        case .connecting, .reasserting:
+            connectionState = .connecting
+        case .disconnecting:
+            connectionState = .disconnecting
+        case .disconnected, .invalid:
+            if case .failed = connectionState { return }
+            let wasConnecting = connectionState == .connecting
+            let shouldReadError = wasConnecting || connectionState == .connected
+            connectionState = .disconnected
+            guard shouldReadError else { return }
+            connection.fetchLastDisconnectError { [weak self] error in
+                let message = error?.localizedDescription ?? (wasConnecting ? "The system VPN could not connect." : nil)
+                guard let message else { return }
+                Task { @MainActor in
+                    guard let self, self.vpnSetup == nil, self.vpnManager?.connection === connection,
+                          self.connectionState == .disconnected else { return }
+                    self.lastError = message
+                    self.connectionState = .failed(message)
                 }
             }
+        @unknown default:
+            connectionState = .disconnected
         }
     }
 
@@ -121,6 +199,17 @@ final class AppState: ObservableObject {
 
     func disconnect() {
         os_log("[RVPN] disconnect requested", type: .info)
+        if VPNManager.extensionAvailable {
+            vpnSetup?.cancel()
+            guard let connection = vpnManager?.connection else {
+                connectionState = .disconnected
+                return
+            }
+            connectionState = connection.status == .disconnected || connection.status == .invalid
+                ? .disconnected : .disconnecting
+            connection.stopVPNTunnel()
+            return
+        }
         RustBridge.stopPump()
         RustBridge.stop()
         connectionState = .disconnected

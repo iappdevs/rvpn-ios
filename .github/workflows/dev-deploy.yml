@@ -145,7 +145,7 @@ jobs:
               <key>NSExtension</key>
               <dict>
                   <key>NSExtensionPointIdentifier</key><string>com.apple.networkextension.packet-tunnel</string>
-                  <key>NSExtensionPrincipalClass</key><string>rvpn_tunnel_provider.RVPNTunnelProvider</string>
+                  <key>NSExtensionPrincipalClass</key><string>RVPN_Tunnel.RVPNTunnelProvider</string>
               </dict>
           </dict>
           </plist>

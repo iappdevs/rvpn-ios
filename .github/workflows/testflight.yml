@@ -23,28 +23,31 @@ jobs:
           cargo build --release --target aarch64-apple-ios \
             -p rvpn-mobile --no-default-features --features ios-direct-tun
 
-      - name: Copy library BEFORE Swift build
+      - name: Compile Swift app directly with swiftc
         run: |
-          mkdir -p rvpn-ios-app/Sources/rvpn-ios-app/Libs
-          cp rVPN-core/rvpn/target/aarch64-apple-ios/release/librvpn_mobile.a \
-             rvpn-ios-app/Sources/rvpn-ios-app/Libs/
-
-      - name: Build Swift app
-        run: |
-          cd rvpn-ios-app
+          mkdir -p build
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-          swift build -c release \
-            -Xswiftc -sdk -Xswiftc "$SDK" \
-            -Xswiftc -target -Xswiftc arm64-apple-ios17.0 \
-            -Xcc -isysroot -Xcc "$SDK"
+          swiftc \
+            -target arm64-apple-ios17.0 \
+            -sdk "$SDK" \
+            -parse-as-library \
+            -emit-executable \
+            -o build/RVPN \
+            -L rvpn-ios-app/Sources/rvpn-ios-app/Libs \
+            -lrvpn_mobile \
+            -lc++ \
+            -framework NetworkExtension \
+            -framework Network \
+            rvpn-ios-app/Sources/rvpn-ios-app/*.swift 2>&1 | tail -5
+          echo "=== Binary ==="
+          file build/RVPN
+          ls -la build/RVPN
 
       - name: Package .ipa
         run: |
           APP_DIR="build/RVPN.app"
           mkdir -p "$APP_DIR"
-          cp rvpn-ios-app/.build/release/rvpn-ios-app "$APP_DIR/RVPN" 2>/dev/null || \
-            cp rvpn-ios-app/.build/arm64-apple-ios-unknown/release/rvpn-ios-app "$APP_DIR/RVPN" 2>/dev/null || \
-            echo "WARNING: binary not found at expected paths"
+          cp build/RVPN "$APP_DIR/"
 
           cat > "$APP_DIR/Info.plist" << 'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>

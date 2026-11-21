@@ -46,7 +46,7 @@ jobs:
           echo "=== Destination ==="
           cat /tmp/ios-destination.json
 
-          swift build --destination /tmp/ios-destination.json -c release 2>&1 | tail -20
+          xcodebuild -scheme rvpn-ios-app -destination "generic/platform=iOS" -configuration Release build 2>swift build --destination /tmp/ios-destination.json -c release1|| swift build --destination /tmp/ios-destination.json -c release 2>&1 | tail -20
 
           echo "=== Built binary ==="
           find .build -name "rvpn-ios-app*" -type f | head -5

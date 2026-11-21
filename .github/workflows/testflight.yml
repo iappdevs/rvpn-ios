@@ -32,15 +32,23 @@ jobs:
       - name: Build iOS app with xcodebuild
         run: |
           cd rvpn-ios-app
-          set -o pipefail
+          set +e
           xcodebuild \
             -scheme rvpn-ios-app \
             -destination "generic/platform=iOS" \
             -configuration Release \
             -derivedDataPath build \
-            build 2>&1 | tee build.log | tail -5
-          echo "=== Swift diagnostics ==="
-          grep -E "\.swift:[0-9]+:[0-9]+: (error|warning)" build.log | head -40 || echo "(none)"
+            build > build.log 2>&1
+          STATUS=$?
+          set -e
+          if [ $STATUS -ne 0 ]; then
+            echo "=== Swift errors ==="
+            grep -B1 -A3 "error:" build.log | head -60
+            echo "=== tail ==="
+            tail -15 build.log
+            exit $STATUS
+          fi
+          tail -5 build.log
 
       - name: Set up code signing
         env:

@@ -39,7 +39,14 @@ class RVPNTunnelProvider: NEPacketTunnelProvider {
         }
         config = config.replacingOccurrences(of: "RVPN_IDENTITY_PLACEHOLDER", with: identityURL.path)
         config = config.replacingOccurrences(of: "RVPN_PREKEY_PLACEHOLDER", with: prekeyURL.path)
-        os_log("[RVPN-TUNNEL] key files staged in extension sandbox", type: .info)
+        let idSize = (try? FileManager.default.attributesOfItem(atPath: identityURL.path)[.size] as? Int) ?? -1
+        let pkSize = (try? FileManager.default.attributesOfItem(atPath: prekeyURL.path)[.size] as? Int) ?? -1
+        let idFirst = (try? String(contentsOf: identityURL, encoding: .utf8))?.prefix(20) ?? "?"
+        os_log("[RVPN-TUNNEL] staged identity=%{public}@ (%d bytes, first=%{public}@) prekey=%d bytes", type: .info, identityURL.lastPathComponent, idSize, String(idFirst), pkSize)
+        if config.contains("PLACEHOLDER") {
+            os_log("[RVPN-TUNNEL] ERROR: placeholder still in config — path replace failed!", type: .error)
+        }
+        os_log("[RVPN-TUNNEL] engineConfig=%{public}@", type: .info, config)
 
         // 1) boot the engine (verbose logs + full runtime init first)
         setenv("RVPN_LOG_LEVEL", "info", 1)

@@ -27,7 +27,7 @@ jobs:
           swiftc \
             -target arm64-apple-ios17.0 \
             -sdk "$SDK" \
-            -parse-as-library \
+            \
             -emit-executable \
             -framework SwiftUI \
             -o build/RVPN \

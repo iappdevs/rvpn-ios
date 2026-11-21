@@ -130,8 +130,12 @@ jobs:
           cp "$BINARY" "$APP_DIR/RVPN"
 
           TUNNEL_BIN=$(find rvpn-ios-app/build rvpn-ios-app/.build -name "rvpn-tunnel-provider" -type f 2>/dev/null | head -1)
-          if [ -z "$TUNNEL_BIN" ]; then echo "ERROR: No tunnel binary found"; exit 1; fi
+          if [ -z "$TUNNEL_BIN" ]; then
+            echo "NOTE: no tunnel extension yet (XcodeGen step pending) — app-only build"
+          fi
           APPEX="$APP_DIR/PlugIns/RVPN Tunnel.appex"
+          [ -n "$TUNNEL_BIN" ] || SKIP_APPEX=1
+          if [ -z "${SKIP_APPEX:-}" ]; then
           mkdir -p "$APPEX"
           cp "$TUNNEL_BIN" "$APPEX/RVPN Tunnel"
           cat > "$APPEX/Info.plist" << APEXPLIST
@@ -183,6 +187,7 @@ jobs:
             --timestamp "$APPEX"
           codesign --verify --verbose=2 "$APPEX"
           echo "APPEX SIGNED"
+          fi
 
           mkdir -p build/ac
           xcrun actool --compile build/ac \

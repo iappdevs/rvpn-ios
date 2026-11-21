@@ -9,9 +9,8 @@ let package = Package(
         .executableTarget(
             name: "rvpn-ios-app",
             path: "Sources/rvpn-ios-app",
-            cxxSettings: [
-                .unsafeFlags(["-I", "Sources/rvpn-ios-app"]),
-                .linkedLibrary("rvpn_mobile", .some("Libs"))
+            cSettings: [
+                .unsafeFlags(["-I", "Sources/rvpn-ios-app"])
             ],
             linkerSettings: [
                 .unsafeFlags(["-L", "Sources/rvpn-ios-app/Libs"]),

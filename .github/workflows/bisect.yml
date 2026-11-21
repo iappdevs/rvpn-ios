@@ -1,4 +1,4 @@
-name: Bisect TeamID
+name: Bisect P12
 on:
   workflow_dispatch:
   push:
@@ -8,8 +8,10 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Test team id
+      - name: Test p12 secrets
         env:
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          P12_BASE64: ${{ secrets.APPLE_DISTRIBUTION_P12 }}
+          P12_PASSWORD: ${{ secrets.APPLE_DISTRIBUTION_P12_PASSWORD }}
         run: |
-          echo "team id length: ${#APPLE_TEAM_ID}"
+          echo "p12 b64 length: ${#P12_BASE64}"
+          echo "pass length: ${#P12_PASSWORD}"

@@ -4,6 +4,8 @@ name: Dev Deploy
 # used by the remote-debug loop — no TestFlight involved.
 on:
   workflow_dispatch:
+  push:
+    branches: [dev/ios-device-20261121]
 
 jobs:
   build-dev:
@@ -106,6 +108,7 @@ jobs:
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           BUILD_NUMBER: ${{ github.run_number }}
+          APP_VERSION: "0.1.1"
         run: |
           rm -rf build
           APP_DIR="build/RVPN.app"
@@ -134,7 +137,7 @@ jobs:
               <key>CFBundleName</key><string>RVPN Tunnel</string>
               <key>CFBundleDisplayName</key><string>RVPN Tunnel</string>
               <key>CFBundleVersion</key><string>${BUILD_NUMBER}</string>
-              <key>CFBundleShortVersionString</key><string>0.1.0</string>
+              <key>CFBundleShortVersionString</key><string>${APP_VERSION}</string>
               <key>CFBundlePackageType</key><string>XPC!</string>
               <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
               <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
@@ -201,7 +204,7 @@ jobs:
               <key>CFBundleName</key><string>R-VPN</string>
               <key>CFBundleDisplayName</key><string>R-VPN</string>
               <key>CFBundleVersion</key><string>${BUILD_NUMBER}</string>
-              <key>CFBundleShortVersionString</key><string>0.1.0</string>
+              <key>CFBundleShortVersionString</key><string>${APP_VERSION}</string>
               <key>CFBundlePackageType</key><string>APPL</string>
               <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
               <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>

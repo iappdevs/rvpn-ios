@@ -155,19 +155,37 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Poll cycle counter so periodic state lines stay identifiable.
+    private static var pollCount = 0
+
     private func refreshState() {
-        switch RustBridge.engineState {
-        case .connected:
-            if connectionState != .connected { connectionState = .connected }
+        let engine = RustBridge.engineState
+        let rx = RustBridge.transferredBytes
+        let ip = RustBridge.tunnelIP
+        AppState.pollCount &+= 1
+        let engineLabel = String(describing: engine)
+
+        // Derive the UI state from the engine state first, then log real changes.
+        let derived: ConnectionState
+        switch engine {
+        case .connected: derived = .connected
         case .connecting:
-            if connectionState == .disconnected { connectionState = .connecting }
+            derived = connectionState == .disconnected ? .connecting : connectionState
         default:
-            if connectionState == .connected || connectionState == .connecting {
-                connectionState = .disconnected
-            }
+            derived = (connectionState == .connected || connectionState == .connecting)
+                ? .disconnected : connectionState
         }
-        tunnelIP = RustBridge.tunnelIP
+        if derived != connectionState {
+            os_log("[RVPN] ui-state %{public}@ -> %{public}@ (engine=%{public}@ ip=%{public}@ rx=%llu)",
+                   type: .info, connectionState.label, derived.label, engineLabel, ip ?? "-", rx)
+            connectionState = derived
+        }
+        if AppState.pollCount % 10 == 0 {
+            os_log("[RVPN] tick engine=%{public}@ ip=%{public}@ rx=%llu",
+                   type: .debug, engineLabel, ip ?? "-", rx)
+        }
+        tunnelIP = ip
         serverIP = RustBridge.serverIP
-        transferredBytes = RustBridge.transferredBytes
+        transferredBytes = rx
     }
 }

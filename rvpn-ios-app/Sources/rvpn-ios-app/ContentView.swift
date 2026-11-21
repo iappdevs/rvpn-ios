@@ -1,4 +1,5 @@
 import SwiftUI
+import os
 import UniformTypeIdentifiers
 
 /// Root tab navigation (v2rayN-style): Connect, Profiles, Settings.
@@ -67,8 +68,10 @@ struct ConnectView: View {
 
             Button {
                 if state.connectionState == .connected || state.connectionState == .connecting {
+                    os_log("[RVPN] ui disconnect tapped", type: .info)
                     state.disconnect()
                 } else if let profile = state.activeProfile {
+                    os_log("[RVPN] ui connect tapped profile=%{public}@", type: .info, profile.slug)
                     state.connect(profile: profile)
                 }
             } label: {
@@ -141,6 +144,7 @@ struct ProfilesView: View {
             List {
                 ForEach(state.profiles) { profile in
                     Button {
+                        os_log("[RVPN] ui select profile %{public}@", type: .info, profile.slug)
                         state.activeProfileSlug = profile.slug
                     } label: {
                         HStack {
@@ -194,9 +198,11 @@ struct ProfilesView: View {
                 }
                 switch ProfileStore.importDocument(text, existing: state.profiles) {
                 case .success(let profile):
+                    os_log("[RVPN] ui import ok slug=%{public}@ server=%{public}@", type: .info, profile.slug, profile.serverAddress)
                     state.addProfile(profile)
                     importMessage = "Imported \(profile.name)"
                 case .failure(let error):
+                    os_log("[RVPN] ui import FAILED: %{public}@", type: .error, error.message)
                     importMessage = error.message
                 }
             }

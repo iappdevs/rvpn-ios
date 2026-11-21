@@ -128,6 +128,51 @@ pub unsafe extern "C" fn rvpn_free_string(_string: *mut c_char) {
     let _ = CString::from_raw(_string);
 }
 
+/// Generate a fresh per-device identity key at the given file path.
+///
+/// Creates parent directories as needed. If the file already exists it is
+/// left untouched (callers use it to provision a profile's identity).
+/// - Returns: 0 on success, -1 on error (details in rvpn_last_error())
+///
+/// # Safety
+/// `path` must be a valid null-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn rvpn_generate_identity(path: *const c_char) -> c_int {
+    info!("[IOS_TUN_FFI] rvpn_generate_identity() called");
+    if path.is_null() {
+        set_last_error("path is null");
+        return ERROR_NULL_POINTER;
+    }
+    let p = match CStr::from_ptr(path).to_str() {
+        Ok(s) => s,
+        Err(_) => {
+            set_last_error("Invalid path encoding");
+            return ERROR_INVALID_CONFIG;
+        }
+    };
+    let file = std::path::Path::new(p);
+    if file.exists() {
+        info!("[IOS_TUN_FFI] identity already exists at {}", p);
+        return SUCCESS;
+    }
+    if let Some(parent) = file.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            set_last_error(&format!("Failed to create identity directory: {}", e));
+            return ERROR_INVALID_CONFIG;
+        }
+    }
+    match IdentityKey::generate().save(file) {
+        Ok(_) => {
+            info!("[IOS_TUN_FFI] identity generated at {}", p);
+            SUCCESS
+        }
+        Err(e) => {
+            set_last_error(&format!("Failed to save identity key: {}", e));
+            ERROR_INVALID_CONFIG
+        }
+    }
+}
+
 /// Notify Rust of network connectivity change
 /// - Parameter hasInternet: 1 if internet available, 0 otherwise
 /// - Returns: 0 on success

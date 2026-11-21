@@ -74,6 +74,7 @@ jobs:
           cp "$BINARY" "$APP_DIR/RVPN"
 
           # Compile asset catalog (app icon) with actool
+          mkdir -p build/ac
           xcrun actool --compile build/ac \
             --minimum-deployment-target 17.0 \
             --platform iphoneos \
@@ -85,6 +86,14 @@ jobs:
           else
             echo "WARNING: no Assets.car produced"
           fi
+
+          # SDK build metadata Apple's validator requires (Xcode injects these
+          # automatically; manual .app assembly has to add them itself).
+          SDK_VERSION=$(xcrun --sdk iphoneos --show-sdk-version)
+          SDK_BUILD=$(xcrun --sdk iphoneos --show-sdk-build-version)
+          XCODE_VERSION=$(xcodebuild -version | awk 'NR==1{print $2}')
+          XCODE_BUILD=$(xcodebuild -version | awk 'NR==2{print $3}')
+          DTXCODE=$(echo "$XCODE_VERSION" | awk -F. '{printf "%d%02d", $1, $2}')
 
           cat > "$APP_DIR/Info.plist" << PLIST
           <?xml version="1.0" encoding="UTF-8"?>
@@ -107,6 +116,14 @@ jobs:
               <key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string></array>
               <key>UILaunchScreen</key><dict/>
               <key>ITSAppUsesNonExemptEncryption</key><false/>
+              <key>DTPlatformName</key><string>iphoneos</string>
+              <key>DTPlatformVersion</key><string>${SDK_VERSION}</string>
+              <key>DTPlatformBuild</key><string>${SDK_BUILD}</string>
+              <key>DTSDKName</key><string>iphoneos${SDK_VERSION}</string>
+              <key>DTSDKBuild</key><string>${SDK_BUILD}</string>
+              <key>DTXcode</key><string>${DTXCODE}</string>
+              <key>DTXcodeBuild</key><string>${XCODE_BUILD}</string>
+              <key>BuildMachineOSBuild</key><string>24C101</string>
           </dict>
           </plist>
           PLIST

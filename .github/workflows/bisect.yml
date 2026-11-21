@@ -1,4 +1,4 @@
-name: Bisect PwOnly
+name: Bisect P12v2
 on:
   workflow_dispatch:
   push:
@@ -8,8 +8,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Test password only
+      - name: Test p12 retry
         env:
-          P12_PASSWORD: ${{ secrets.APPLE_DISTRIBUTION_P12_PASSWORD }}
+          P12_BASE64: ${{ secrets.APPLE_DISTRIBUTION_P12 }}
         run: |
-          echo "pass length: ${#P12_PASSWORD}"
+          echo "p12 b64 length: ${#P12_BASE64}"

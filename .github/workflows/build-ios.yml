@@ -1,0 +1,41 @@
+name: Build iOS
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Build Rust engine for iOS
+        run: |
+          cd rVPN-core/rvpn
+          cargo build --release --target aarch64-apple-ios \
+            -p rvpn-mobile --no-default-features --features ios-direct-tun
+
+      - name: Copy static library
+        run: |
+          mkdir -p rvpn-ios/rvpn-ios-app/Sources/rvpn-ios-app/Libs
+          cp rVPN-core/rvpn/target/aarch64-apple-ios/release/librvpn_mobile.a \
+             rvpn-ios/rvpn-ios-app/Sources/rvpn-ios-app/Libs/
+
+      - name: Build iOS app
+        run: |
+          cd rvpn-ios/rvpn-ios-app
+          swift build -c release
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rvpn-ios
+          path: rvpn-ios/rvpn-ios-app/.build/release/

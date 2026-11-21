@@ -1,4 +1,4 @@
-name: Bisect Minimal
+name: Bisect NoSecrets
 on:
   workflow_dispatch:
   push:
@@ -8,11 +8,6 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Set up code signing
-        env:
-          P12_BASE64: ${{ secrets.APPLE_DISTRIBUTION_P12 }}
-          P12_PASSWORD: ${{ secrets.APPLE_DISTRIBUTION_P12_PASSWORD }}
-          PROFILE_BASE64: ${{ secrets.APPLE_MOBILEPROVISION }}
+      - name: Hello
         run: |
-          echo "bisect minimal with signing env"
-          echo "$P12_BASE64" | base64 -d > cert.p12 || echo "no p12"
+          echo "no secrets here"

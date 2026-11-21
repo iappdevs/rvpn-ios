@@ -126,7 +126,7 @@ jobs:
               <key>CFBundleIconName</key><string>AppIcon</string>
               <key>MinimumOSVersion</key><string>17.0</string>
               <key>LSRequiresIPhoneOS</key><true/>
-              <key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>
+              <key>UIDeviceFamily</key><array><integer>1</integer></array>
               <key>UIRequiredDeviceCapabilities</key><array><string>arm64</string></array>
               <key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string></array>
               <key>UILaunchScreen</key><dict/>

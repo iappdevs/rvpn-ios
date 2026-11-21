@@ -44,7 +44,9 @@ final class AppState: ObservableObject {
     init() {
         profiles = ProfileStore.load()
         activeProfileSlug = UserDefaults.standard.string(forKey: "activeProfileSlug")
+        setenv("RVPN_LOG_LEVEL", "info", 1)
         RustBridge.initialize()
+        os_log("[RVPN] app init (engine runtime up, RVPN_LOG_LEVEL=info)", type: .info)
         startStatsPolling()
         observeLifecycle()
     }

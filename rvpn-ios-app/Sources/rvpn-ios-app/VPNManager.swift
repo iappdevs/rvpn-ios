@@ -6,8 +6,23 @@ import os
 enum VPNManager {
     private static let tunnelBundleId = "org.rvpn.ios.tunnel"
 
+    /// True only when the packet-tunnel extension binary ships in the app
+    /// bundle (PlugIns/RVPN Tunnel.appex). Until the XcodeGen project lands
+    /// the appex is absent and every connect must use the in-app engine.
+    static var extensionAvailable: Bool {
+        guard let plugIns = Bundle.main.builtInPlugInsURL else { return false }
+        let appex = plugIns.appendingPathComponent("RVPN Tunnel.appex", isDirectory: true)
+        var isDir: ObjCBool = false
+        return FileManager.default.fileExists(atPath: appex.path, isDirectory: &isDir) && isDir.boolValue
+    }
+
     /// Load (or create) our tunnel configuration, then bring the tunnel up.
     static func connect(profile: Profile, completion: @escaping (String?) -> Void) {
+        guard extensionAvailable else {
+            os_log("[RVPN] tunnel appex not embedded — in-app engine path", type: .info)
+            completion("no appex")
+            return
+        }
         let configJSON = ProfileStore.engineConfig(for: profile)
         NETunnelProviderManager.loadAllFromPreferences { managers, error in
             if let error {

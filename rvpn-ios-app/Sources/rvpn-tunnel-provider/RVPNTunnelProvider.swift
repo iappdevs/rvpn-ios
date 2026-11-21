@@ -11,7 +11,7 @@ class RVPNTunnelProvider: NEPacketTunnelProvider {
     private var pumpThread: Thread?
 
     override func startTunnel(
-        _ options: [String: NSObject]?,
+        options: [String: NSObject]? = nil,
         completionHandler: @escaping (Error?) -> Void
     ) {
         os_log("[RVPN-TUNNEL] startTunnel called", type: .info)
@@ -19,14 +19,14 @@ class RVPNTunnelProvider: NEPacketTunnelProvider {
             .providerConfiguration?["engineConfig"] as? String
         else {
             os_log("[RVPN-TUNNEL] no engineConfig in providerConfiguration", type: .error)
-            completionHandler(NEProviderError(.configurationInvalid))
+            completionHandler(NSError(domain: "org.rvpn.ios.tunnel", code: 1, userInfo: [NSLocalizedDescriptionKey: "missing engineConfig"]))
             return
         }
 
         // 1) boot the engine
         if let error = RustBridge.start(configJSON: config) {
             os_log("[RVPN-TUNNEL] engine start failed: %{public}@", type: .error, error)
-            completionHandler(NEProviderError(.connectionFailed))
+            completionHandler(NSError(domain: "org.rvpn.ios.tunnel", code: 2, userInfo: [NSLocalizedDescriptionKey: error]))
             return
         }
         os_log("[RVPN-TUNNEL] engine started", type: .info)
@@ -92,7 +92,7 @@ class RVPNTunnelProvider: NEPacketTunnelProvider {
     }
 
     override func stopTunnel(
-        _ reason: NEProviderStopReason,
+        with reason: NEProviderStopReason,
         completionHandler: @escaping () -> Void
     ) {
         os_log("[RVPN-TUNNEL] stopTunnel reason=%ld", type: .info, reason.rawValue)
@@ -101,9 +101,3 @@ class RVPNTunnelProvider: NEPacketTunnelProvider {
     }
 }
 
-/// Typed provider error.
-private struct NEProviderError: LocalizedError {
-    let code: Int
-    init(_ code: Int) { self.code = code }
-    var errorDescription: String? { "provider error \(code)" }
-}

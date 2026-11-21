@@ -121,6 +121,7 @@ jobs:
               <key>CFBundleVersion</key><string>${BUILD_NUMBER}</string>
               <key>CFBundleShortVersionString</key><string>0.1.0</string>
               <key>CFBundlePackageType</key><string>APPL</string>
+              <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
               <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
               <key>CFBundleDevelopmentRegion</key><string>en</string>
               <key>CFBundleIconName</key><string>AppIcon</string>

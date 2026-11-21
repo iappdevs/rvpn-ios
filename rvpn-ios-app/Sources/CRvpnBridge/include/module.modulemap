@@ -1,4 +1,0 @@
-module CRvpnBridge {
-    header "rvpn_bridge.h"
-    export *
-}

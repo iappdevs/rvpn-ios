@@ -6,13 +6,8 @@ let package = Package(
     platforms: [.iOS(.v17)],
     dependencies: [],
     targets: [
-        .target(
-            name: "CRvpnBridge",
-            path: "Sources/CRvpnBridge"
-        ),
         .executableTarget(
             name: "rvpn-ios-app",
-            dependencies: ["CRvpnBridge"],
             path: "Sources/rvpn-ios-app",
             linkerSettings: [
                 .unsafeFlags(["-L", "Sources/rvpn-ios-app/Libs"]),

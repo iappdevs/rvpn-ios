@@ -1,4 +1,4 @@
-name: Bisect Rename
+name: Bisect AsciiBig
 on:
   workflow_dispatch:
   push:
@@ -10,6 +10,6 @@ jobs:
       - uses: actions/checkout@v4
       - name: Test renamed secret
         env:
-          P12_BASE64: ${{ secrets.TEST_P12_FILE }}
+          P12_BASE64: ${{ secrets.TEST_ASCII_BIG }}
         run: |
           echo "p12 b64 length: ${#P12_BASE64}"

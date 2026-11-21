@@ -51,6 +51,9 @@ private func c_rvpn_tun_get_last_rx_time() -> UInt64
 @_silgen_name("rvpn_tun_wait_for_packet")
 private func c_rvpn_tun_wait_for_packet(_ timeoutMs: UInt64) -> Int32
 
+@_silgen_name("rvpn_tun_write_packet")
+private func c_rvpn_tun_write_packet(_ data: UnsafePointer<UInt8>?, _ len: Int) -> Int32
+
 @_silgen_name("rvpn_tun_read_packet")
 private func c_rvpn_tun_read_packet(
     _ buffer: UnsafeMutablePointer<UInt8>?,

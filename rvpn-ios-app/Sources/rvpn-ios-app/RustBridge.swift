@@ -17,8 +17,8 @@ private func c_rvpn_start(_ configJSON: UnsafePointer<CChar>) -> Int32
 @_silgen_name("rvpn_stop")
 private func c_rvpn_stop() -> Int32
 
-@_silgen_name("rvpn_generate_identity")
-private func c_rvpn_generate_identity(_ path: UnsafePointer<CChar>) -> Int32
+@_silgen_name("rvpn_generate_identity_file")
+private func c_rvpn_generate_identity_file(_ path: UnsafePointer<CChar>) -> Int32
 
 @_silgen_name("rvpn_network_changed")
 private func c_rvpn_network_changed(_ hasInternet: Int32) -> Int32
@@ -96,7 +96,7 @@ enum RustBridge {
     static func generateIdentity(at path: String) -> String? {
         var error: String?
         path.withCString { ptr in
-            if c_rvpn_generate_identity(ptr) != 0 {
+            if c_rvpn_generate_identity_file(ptr) != 0 {
                 error = takeError() ?? "Failed to generate identity"
             }
         }

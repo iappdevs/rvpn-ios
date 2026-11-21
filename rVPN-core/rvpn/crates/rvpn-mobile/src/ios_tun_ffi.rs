@@ -132,12 +132,13 @@ pub unsafe extern "C" fn rvpn_free_string(_string: *mut c_char) {
 ///
 /// Creates parent directories as needed. If the file already exists it is
 /// left untouched (callers use it to provision a profile's identity).
+/// (The string-based variant is `rvpn_generate_identity()` below.)
 /// - Returns: 0 on success, -1 on error (details in rvpn_last_error())
 ///
 /// # Safety
 /// `path` must be a valid null-terminated C string.
 #[no_mangle]
-pub unsafe extern "C" fn rvpn_generate_identity(path: *const c_char) -> c_int {
+pub unsafe extern "C" fn rvpn_generate_identity_file(path: *const c_char) -> c_int {
     info!("[IOS_TUN_FFI] rvpn_generate_identity() called");
     if path.is_null() {
         set_last_error("path is null");

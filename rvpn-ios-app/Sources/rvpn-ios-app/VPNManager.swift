@@ -31,9 +31,31 @@ enum VPNManager {
                 return
             }
             let manager = managers?.first ?? NETunnelProviderManager()
+            // The extension lives in its own sandbox and cannot read the
+            // app container — hand it the identity/prekey contents directly.
+            let slug = profile.slug
+            let identity = try? String(contentsOf: ProfileStore.identityPath(slug), encoding: .utf8)
+            let prekey = try? String(contentsOf: ProfileStore.prekeyPath(slug), encoding: .utf8)
+            guard let identity, let prekey else {
+                os_log("[RVPN] profile files missing — cannot start tunnel", type: .error)
+                completion("profile files missing")
+                return
+            }
+            var config = configJSON
+            // point the engine at files the extension will write itself
+            config = config.replacingOccurrences(
+                of: ProfileStore.identityPath(slug).path,
+                with: "RVPN_IDENTITY_PLACEHOLDER")
+            config = config.replacingOccurrences(
+                of: ProfileStore.prekeyPath(slug).path,
+                with: "RVPN_PREKEY_PLACEHOLDER")
             let proto = NETunnelProviderProtocol()
             proto.providerBundleIdentifier = tunnelBundleId
-            proto.providerConfiguration = ["engineConfig": configJSON]
+            proto.providerConfiguration = [
+                "engineConfig": config,
+                "identityKey": identity,
+                "prekeyBundle": prekey,
+            ]
             proto.serverAddress = profile.serverAddress
             proto.username = profile.name
             manager.protocolConfiguration = proto

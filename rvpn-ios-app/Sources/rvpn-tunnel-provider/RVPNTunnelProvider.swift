@@ -15,13 +15,31 @@ class RVPNTunnelProvider: NEPacketTunnelProvider {
         completionHandler: @escaping (Error?) -> Void
     ) {
         os_log("[RVPN-TUNNEL] startTunnel called", type: .info)
-        guard let config = (protocolConfiguration as? NETunnelProviderProtocol)?
-            .providerConfiguration?["engineConfig"] as? String
+        guard let providerConfig = (protocolConfiguration as? NETunnelProviderProtocol)?
+            .providerConfiguration,
+            var config = providerConfig["engineConfig"] as? String,
+            let identity = providerConfig["identityKey"] as? String,
+            let prekey = providerConfig["prekeyBundle"] as? String
         else {
-            os_log("[RVPN-TUNNEL] no engineConfig in providerConfiguration", type: .error)
+            os_log("[RVPN-TUNNEL] incomplete providerConfiguration", type: .error)
             completionHandler(NSError(domain: "org.rvpn.ios.tunnel", code: 1, userInfo: [NSLocalizedDescriptionKey: "missing engineConfig"]))
             return
         }
+        // Materialise identity/prekey inside THIS process's sandbox.
+        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let identityURL = dir.appendingPathComponent("identity.key")
+        let prekeyURL = dir.appendingPathComponent("prekey-bundle.json")
+        do {
+            try identity.write(to: identityURL, atomically: true, encoding: .utf8)
+            try prekey.write(to: prekeyURL, atomically: true, encoding: .utf8)
+        } catch {
+            os_log("[RVPN-TUNNEL] cannot write key files: %{public}@", type: .error, "\(error)")
+            completionHandler(NSError(domain: "org.rvpn.ios.tunnel", code: 3, userInfo: [NSLocalizedDescriptionKey: "\(error)"]))
+            return
+        }
+        config = config.replacingOccurrences(of: "RVPN_IDENTITY_PLACEHOLDER", with: identityURL.path)
+        config = config.replacingOccurrences(of: "RVPN_PREKEY_PLACEHOLDER", with: prekeyURL.path)
+        os_log("[RVPN-TUNNEL] key files staged in extension sandbox", type: .info)
 
         // 1) boot the engine
         if let error = RustBridge.start(configJSON: config) {

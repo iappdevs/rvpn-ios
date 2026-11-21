@@ -19,14 +19,14 @@ jobs:
 
       - name: Build Rust engine for iOS
         run: |
-          cd rVPN-core/rvn
+          cd rVPN-core/rvpn
           cargo build --release --target aarch64-apple-ios \
             -p rvpn-mobile --no-default-features --features ios-direct-tun
 
       - name: Copy static library into app
         run: |
           mkdir -p rvpn-ios-app/Sources/rvpn-ios-app/Libs
-          cp rVPN-core/rvn/target/aarch64-apple-ios/release/librvpn_mobile.a \
+          cp rVPN-core/rvpn/target/aarch64-apple-ios/release/librvpn_mobile.a \
              rvpn-ios-app/Sources/rvpn-ios-app/Libs/
 
       - name: Build Swift for iOS (arm64)
@@ -44,7 +44,7 @@ jobs:
         with:
           name: rvpn-ios-parts
           path: |
-            rVPN-core/rvn/target/aarch64-apple-ios/release/librvpn_mobile.a
+            rVPN-core/rvpn/target/aarch64-apple-ios/release/librvpn_mobile.a
             rvpn-ios-app/.build/release/rvpn-ios-app
           if-no-files-found: warn
           retention-days: 30

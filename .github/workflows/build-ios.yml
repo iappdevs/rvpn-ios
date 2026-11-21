@@ -19,80 +19,32 @@ jobs:
 
       - name: Build Rust engine for iOS
         run: |
-          cd rVPN-core/rvpn
+          cd rVPN-core/rvn
           cargo build --release --target aarch64-apple-ios \
             -p rvpn-mobile --no-default-features --features ios-direct-tun
 
       - name: Copy static library into app
         run: |
           mkdir -p rvpn-ios-app/Sources/rvpn-ios-app/Libs
-          cp rVPN-core/rvpn/target/aarch64-apple-ios/release/librvpn_mobile.a \
+          cp rVPN-core/rvn/target/aarch64-apple-ios/release/librvpn_mobile.a \
              rvpn-ios-app/Sources/rvpn-ios-app/Libs/
 
-      - name: Install xtool
-        run: |
-          curl -sSfL https://github.com/xtool-org/xtool/releases/download/1.24.0/xtool.app.zip -o /tmp/xtool.zip
-          unzip -q /tmp/xtool.zip -d /tmp/xtool
-          sudo cp /tmp/xtool/xtool.app/Contents/MacOS/xtool /usr/local/bin/xtool
-          chmod +x /usr/local/bin/xtool
-          xtool --version
-
-      - name: Setup iOS SDK
-        run: |
-          # On macOS, use the installed Xcode directly
-          xcode-select -p
-          xcrun --sdk iphoneos --show-sdk-path
-
-      - name: Build with xtool
+      - name: Build Swift for iOS (arm64)
         run: |
           cd rvpn-ios-app
-          # xtool dev builds + signs + deploys, but we just want the build
-          swift build -c release --destination generic/platform=iOS 2>&1 || {
-            echo "--- swift build failed, trying xtool ---"
-            xtool build 2>&1
-          }
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          swift build -c release \
+            -Xswiftc -sdk -Xswiftc "$SDK" \
+            -Xswiftc -target -Xswiftc arm64-apple-ios17.0 \
+            -Xcc -isysroot -Xcc "$SDK" \
+            2>&1 | tail -20
 
-      - name: Package .ipa (unsigned for now)
-        run: |
-          # Create a .app bundle structure
-          mkdir -p build/RVPN.app
-          cp -r rvpn-ios-app/.build/release/* build/RVPN.app/ 2>/dev/null || true
-
-          # Create Info.plist
-          cat > build/RVPN.app/Info.plist << 'PLIST'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>CFBundleExecutable</key>
-              <string>rvpn-ios-app</string>
-              <key>CFBundleIdentifier</key>
-              <string>org.rvpn.ios</string>
-              <key>CFBundleName</key>
-              <string>R-VPN</string>
-              <key>CFBundleVersion</key>
-              <string>0.1.0</string>
-              <key>CFBundleShortVersionString</key>
-              <string>0.1.0</string>
-              <key>MinimumOSVersion</key>
-              <string>17.0</string>
-          </dict>
-          </plist>
-          PLIST
-
-          # Package as .ipa
-          mkdir -p build/Payload
-          cp -r build/RVPN.app build/Payload/
-          cd build && zip -r RVPN-unsigned.ipa Payload/ && cd ..
-
-          echo "=== Build outputs ==="
-          find build -name "*.ipa" -o -name "*.app" | head -5
-
-      - name: Upload artifacts
+      - name: Upload Rust library + Swift binary
         uses: actions/upload-artifact@v4
         with:
-          name: rvpn-ios-build
+          name: rvpn-ios-parts
           path: |
-            build/*.ipa
-            rVPN-core/rvpn/target/aarch64-apple-ios/release/librvpn_mobile.a
+            rVPN-core/rvn/target/aarch64-apple-ios/release/librvpn_mobile.a
+            rvpn-ios-app/.build/release/rvpn-ios-app
           if-no-files-found: warn
+          retention-days: 30

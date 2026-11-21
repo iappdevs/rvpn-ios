@@ -1,1 +1,1 @@
-// Empty shim — symbols come from the linked Rust static library
+#include "rvpn_bridge.h"

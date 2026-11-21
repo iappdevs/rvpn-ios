@@ -63,38 +63,6 @@ jobs:
           fi
           tail -3 build.log
 
-      - name: Build tunnel provider with xcodebuild
-        run: |
-          cd rvpn-ios-app
-          xcodebuild -list > /dev/null 2>&1 || true
-          sleep 3
-          set +e
-          xcodebuild \
-            -scheme rvpn-tunnel-provider \
-            -destination "generic/platform=iOS" \
-            -configuration Release \
-            -derivedDataPath build \
-            build > tunnel.log 2>&1
-          STATUS=$?
-          if [ $STATUS -ne 0 ] && grep -q "does not contain a scheme" tunnel.log; then
-            sleep 5
-            xcodebuild -list > /dev/null 2>&1 || true
-            xcodebuild \
-              -scheme rvpn-tunnel-provider \
-              -destination "generic/platform=iOS" \
-              -configuration Release \
-              -derivedDataPath build \
-              build > tunnel.log 2>&1
-            STATUS=$?
-          fi
-          set -e
-          if [ $STATUS -ne 0 ]; then
-            echo "=== tunnel errors ==="
-            grep -B1 -A3 "error:" tunnel.log | head -40
-            exit $STATUS
-          fi
-          tail -3 tunnel.log
-
       - name: Set up code signing
         env:
           P12_BASE64: ${{ secrets.APPLE_DEV_P12 }}

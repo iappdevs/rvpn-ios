@@ -1,4 +1,4 @@
-name: Bisect NoSecrets
+name: Bisect TeamID
 on:
   workflow_dispatch:
   push:
@@ -8,6 +8,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Hello
+      - name: Test team id
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          echo "no secrets here"
+          echo "team id length: ${#APPLE_TEAM_ID}"

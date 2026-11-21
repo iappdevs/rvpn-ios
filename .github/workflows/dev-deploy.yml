@@ -63,6 +63,24 @@ jobs:
           fi
           tail -3 build.log
 
+      - name: Build tunnel provider with xcodegen
+        run: |
+          brew install xcodegen 2>/dev/null || true
+          cd rvpn-ios-app
+          xcodegen generate
+          ls RVPTunnelGen.xcodeproj >/dev/null && echo "project generated"
+          set +e
+          xcodebuild             -project RVPTunnelGen.xcodeproj             -scheme "RVPN Tunnel"             -destination "generic/platform=iOS"             -configuration Release             -derivedDataPath build             CODE_SIGNING_ALLOWED=NO             build > tunnel.log 2>&1
+          STATUS=$?
+          set -e
+          if [ $STATUS -ne 0 ]; then
+            echo "=== tunnel errors ==="
+            grep -B1 -A3 "error:" tunnel.log | head -40
+            exit $STATUS
+          fi
+          tail -3 tunnel.log
+          find build/Build/Products -name "RVPN Tunnel*" -maxdepth 3
+
       - name: Set up code signing
         env:
           P12_BASE64: ${{ secrets.APPLE_DEV_P12 }}
@@ -97,7 +115,7 @@ jobs:
           if [ -z "$BINARY" ]; then echo "ERROR: No binary found"; exit 1; fi
           cp "$BINARY" "$APP_DIR/RVPN"
 
-          TUNNEL_BIN=$(find rvpn-ios-app/build rvpn-ios-app/.build -name "rvpn-tunnel-provider" -type f 2>/dev/null | head -1)
+          TUNNEL_BIN=$(find rvpn-ios-app/build -name "RVPN Tunnel" -type f 2>/dev/null | grep -v appex | head -1)
           if [ -z "$TUNNEL_BIN" ]; then
             echo "NOTE: no tunnel extension yet (XcodeGen step pending) — app-only build"
           fi

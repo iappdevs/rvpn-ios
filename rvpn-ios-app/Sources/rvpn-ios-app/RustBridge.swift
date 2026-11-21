@@ -84,12 +84,12 @@ private func rvpnLogCallback(level: Int32, message: UnsafePointer<CChar>?) {
 enum RustBridge {
     /// Set once the pump thread should stop.
     private static var pumpRunning = false
-    /// Engine state codes from `rvpn_tun_get_state()`.
+    /// Engine state codes from `rvpn_tun_get_state()` (TunClientState in ios_tun.rs).
     enum EngineState: Int32 {
-        case idle = 0
+        case idle = 0          // Init
         case connecting = 1
-        case connected = 2
-        case disconnected = 3
+        case ipAssigned = 2
+        case connected = 3
         case error = 4
     }
 

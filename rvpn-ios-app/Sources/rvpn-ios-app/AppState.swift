@@ -185,7 +185,8 @@ final class AppState: ObservableObject {
         // Derive the UI state from the engine state first, then log real changes.
         let derived: ConnectionState
         switch engine {
-        case .connected: derived = .connected
+        case .connected, .ipAssigned:
+            derived = .connected
         case .connecting:
             derived = connectionState == .disconnected ? .connecting : connectionState
         default:

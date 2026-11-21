@@ -1,4 +1,5 @@
 import Foundation
+import os
 import SwiftUI
 
 /// App-wide observable state: profiles, active connection, live stats.
@@ -33,6 +34,8 @@ final class AppState: ObservableObject {
     @Published var lastError: String?
 
     private var statsTimer: Timer?
+    /// Keeps sockets alive ~30 s when the app moves to the background.
+    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
 
     var activeProfile: Profile? {
         profiles.first { $0.slug == activeProfileSlug }
@@ -43,6 +46,31 @@ final class AppState: ObservableObject {
         activeProfileSlug = UserDefaults.standard.string(forKey: "activeProfileSlug")
         RustBridge.initialize()
         startStatsPolling()
+        observeLifecycle()
+    }
+
+    /// Mark every interesting transition in the unified log so a device
+    /// syslog captures the full story while debugging.
+    private func observeLifecycle() {
+        let center = NotificationCenter.default
+        center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+            os_log("[RVPN] app entered background", type: .info)
+            guard let self, self.connectionState == .connected || self.connectionState == .connecting else { return }
+            self.backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "rvpn-engine") {
+                os_log("[RVPN] background time expired — engine will suspend", type: .error)
+                self.endBackgroundTask()
+            }
+        }
+        center.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
+            os_log("[RVPN] app entered foreground", type: .info)
+            self?.endBackgroundTask()
+        }
+    }
+
+    private func endBackgroundTask() {
+        guard backgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundTask)
+        backgroundTask = .invalid
     }
 
     // MARK: - Connection
@@ -56,21 +84,27 @@ final class AppState: ObservableObject {
 
         // Provisioning + engine start run off the main thread; the engine
         // logs and connects on its own tokio runtime.
+        os_log("[RVPN] connect requested for %{public}@ (%{public}@)", type: .info, profile.name, profile.serverAddress)
         let configJSON = ProfileStore.engineConfig(for: profile)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             if let error = RustBridge.start(configJSON: configJSON) {
+                os_log("[RVPN] engine start failed: %{public}@", type: .error, error)
                 Task { @MainActor in
                     self.connectionState = .failed(error)
                     self.lastError = error
                 }
                 return
             }
+            os_log("[RVPN] engine started, pumping packets", type: .info)
+            RustBridge.startPump()
             Task { @MainActor in self.refreshState() }
         }
     }
 
     func disconnect() {
+        os_log("[RVPN] disconnect requested", type: .info)
+        RustBridge.stopPump()
         RustBridge.stop()
         connectionState = .disconnected
         tunnelIP = nil

@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 // MARK: - Raw C ABI (rvpn-mobile ios_tun_ffi.rs)
 
@@ -47,10 +48,39 @@ private func c_rvpn_tun_get_rss_bytes() -> UInt64
 @_silgen_name("rvpn_tun_get_last_rx_time")
 private func c_rvpn_tun_get_last_rx_time() -> UInt64
 
+@_silgen_name("rvpn_tun_wait_for_packet")
+private func c_rvpn_tun_wait_for_packet(_ timeoutMs: UInt64) -> Int32
+
+@_silgen_name("rvpn_tun_read_packet")
+private func c_rvpn_tun_read_packet(
+    _ buffer: UnsafeMutablePointer<UInt8>?,
+    _ bufferLen: Int,
+    _ outLen: UnsafeMutablePointer<Int>?
+) -> Int32
+
+@_silgen_name("rvpn_set_log_callback")
+private func c_rvpn_set_log_callback(
+    _ callback: (@convention(c) (Int32, UnsafePointer<CChar>?) -> Void)?
+)
+
 // MARK: - Swift-friendly wrapper
+
+/// Rust engine log line forwarded to the unified logging system, so
+/// `idevicesyslog` (and Console.app) show the engine's own diagnostics.
+private func rvpnLogCallback(level: Int32, message: UnsafePointer<CChar>?) {
+    let text = message.map { String(cString: $0) } ?? ""
+    switch level {
+    case 0, 1: os_log("[RVPN-DBG] %{public}@", type: .debug, text)
+    case 2: os_log("[RVPN] %{public}@", type: .info, text)
+    case 3: os_log("[RVPN] %{public}@", type: .default, text)
+    default: os_log("[RVPN] %{public}@", type: .error, text)
+    }
+}
 
 /// Typed wrapper around the rvpn-mobile C ABI.
 enum RustBridge {
+    /// Set once the pump thread should stop.
+    private static var pumpRunning = false
     /// Engine state codes from `rvpn_tun_get_state()`.
     enum EngineState: Int32 {
         case idle = 0
@@ -73,7 +103,36 @@ enum RustBridge {
 
     @discardableResult
     static func initialize() -> Int32 {
-        c_rvpn_initialize()
+        c_rvpn_set_log_callback(rvpnLogCallback)
+        return c_rvpn_initialize()
+    }
+
+    /// Drain the engine's outgoing packets on a background thread.
+    ///
+    /// The iOS FFI design expects the tunnel provider to pump packets
+    /// (`wait_for_packet` → `read_packet` → packetFlow). In the app process
+    /// there is no utun device, but draining the channel still keeps the
+    /// relay healthy and lets session diagnostics flow while debugging.
+    static func startPump() {
+        guard !pumpRunning else { return }
+        pumpRunning = true
+        os_log("[RVPN] packet pump started", type: .info)
+        Thread.detachNewThread {
+            var buffer = [UInt8](repeating: 0, count: 65536)
+            while pumpRunning {
+                if c_rvpn_tun_wait_for_packet(500) != 1 { continue }
+                buffer.withUnsafeMutableBufferPointer { raw in
+                    var outLen = 0
+                    _ = c_rvpn_tun_read_packet(
+                        raw.baseAddress, raw.count, &outLen)
+                }
+            }
+            os_log("[RVPN] packet pump stopped", type: .info)
+        }
+    }
+
+    static func stopPump() {
+        pumpRunning = false
     }
 
     /// Start the engine with a camelCase MobileConfig JSON payload.

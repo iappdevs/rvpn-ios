@@ -115,7 +115,7 @@ jobs:
           if [ -z "$BINARY" ]; then echo "ERROR: No binary found"; exit 1; fi
           cp "$BINARY" "$APP_DIR/RVPN"
 
-          TUNNEL_BIN=$(find rvpn-ios-app/build -name "RVPN Tunnel" -type f 2>/dev/null | grep -v appex | head -1)
+          TUNNEL_BIN=$(find rvpn-ios-app/build -name "RVPN Tunnel" -type f 2>/dev/null | grep -v dSYM | head -1)
           if [ -z "$TUNNEL_BIN" ]; then
             echo "NOTE: no tunnel extension yet (XcodeGen step pending) — app-only build"
           fi

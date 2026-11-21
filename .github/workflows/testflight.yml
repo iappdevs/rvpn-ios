@@ -32,34 +32,61 @@ jobs:
       - name: Build iOS app with xcodebuild
         run: |
           cd rvpn-ios-app
-          # List available schemes
-          xcodebuild -list 2>&1 | head -20
-
-          # Try building with xcodebuild
           xcodebuild \
             -scheme rvpn-ios-app \
             -destination "generic/platform=iOS" \
             -configuration Release \
             -derivedDataPath build \
-            build 2>&1 | tail -30
+            build 2>&1 | tail -10
 
-      - name: Package .ipa
+      - name: Set up code signing
+        env:
+          P12_BASE64: ${{ secrets.APPLE_DISTRIBUTION_P12 }}
+          P12_PASSWORD: ${{ secrets.APPLE_DISTRIBUTION_P12_PASSWORD }}
+          PROFILE_BASE64: ${{ secrets.APPLE_MOBILEPROVISION }}
         run: |
+          KEYCHAIN_PASSWORD=tempkeychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain-db
+          security default-keychain -s build.keychain-db
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain-db
+          security set-keychain-settings -t 3600 -u build.keychain-db
+          echo "$P12_BASE64" | base64 -d > cert.p12
+          security import cert.p12 -k build.keychain-db -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" build.keychain-db
+          security list-keychain -d user -s build.keychain-db
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          echo "$PROFILE_BASE64" | base64 -d > ~/Library/MobileDevice/Provisioning\ Profiles/rvpn.mobileprovision
+          echo "--- identities ---"
+          security find-identity -v -p codesigning build.keychain-db
+
+      - name: Package and sign .ipa
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          rm -rf build
           APP_DIR="build/RVPN.app"
           mkdir -p "$APP_DIR"
 
-          BINARY=$(find rvpn-ios-app/build -name "rvpn-ios-app" -type f 2>/dev/null | head -1)
-          [ -z "$BINARY" ] && BINARY=$(find rvpn-ios-app/.build -name "rvpn-ios-app" -type f 2>/dev/null | head -1)
-
-          if [ -z "$BINARY" ]; then
-            echo "ERROR: No binary found"
-            exit 1
-          fi
-
+          BINARY=$(find rvpn-ios-app/build rvpn-ios-app/.build -name "rvpn-ios-app" -type f 2>/dev/null | head -1)
+          if [ -z "$BINARY" ]; then echo "ERROR: No binary found"; exit 1; fi
           echo "Found: $BINARY"
           cp "$BINARY" "$APP_DIR/RVPN"
 
-          cat > "$APP_DIR/Info.plist" << 'PLIST'
+          # Compile asset catalog (app icon) with actool
+          xcrun actool --compile build/ac \
+            --minimum-deployment-target 17.0 \
+            --platform iphoneos \
+            --app-icon AppIcon \
+            --output-partial-info-plist build/ac_info.plist \
+            rvpn-ios-app/Assets.xcassets 2>&1 | tail -5
+          if [ -f build/ac/Assets.car ]; then
+            cp build/ac/Assets.car "$APP_DIR/Assets.car"
+          else
+            echo "WARNING: no Assets.car produced"
+          fi
+
+          cat > "$APP_DIR/Info.plist" << PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
@@ -68,17 +95,48 @@ jobs:
               <key>CFBundleIdentifier</key><string>org.rvpn.ios</string>
               <key>CFBundleName</key><string>R-VPN</string>
               <key>CFBundleDisplayName</key><string>R-VPN</string>
-              <key>CFBundleVersion</key><string>1</string>
+              <key>CFBundleVersion</key><string>${BUILD_NUMBER}</string>
               <key>CFBundleShortVersionString</key><string>0.1.0</string>
               <key>CFBundlePackageType</key><string>APPL</string>
+              <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+              <key>CFBundleDevelopmentRegion</key><string>en</string>
+              <key>CFBundleIconName</key><string>AppIcon</string>
               <key>MinimumOSVersion</key><string>17.0</string>
+              <key>LSRequiresIPhoneOS</key><true/>
+              <key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>
+              <key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string></array>
+              <key>UILaunchScreen</key><dict/>
+              <key>ITSAppUsesNonExemptEncryption</key><false/>
           </dict>
           </plist>
           PLIST
 
+          cp ~/Library/MobileDevice/Provisioning\ Profiles/rvpn.mobileprovision \
+             "$APP_DIR/embedded.mobileprovision"
+          printf 'APPL????' > "$APP_DIR/PkgInfo"
+
+          cat > entitlements.plist << PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>application-identifier</key><string>${APPLE_TEAM_ID}.org.rvpn.ios</string>
+              <key>beta-reports-active</key><true/>
+              <key>com.apple.developer.team-identifier</key><string>${APPLE_TEAM_ID}</string>
+          </dict>
+          </plist>
+          PLIST
+
+          codesign --force --identifier org.rvpn.ios \
+            --sign "Apple Distribution" \
+            --entitlements entitlements.plist \
+            --timestamp "$APP_DIR"
+          codesign --verify --verbose=2 "$APP_DIR"
+          echo "SIGNATURE OK"
+
           mkdir -p build/Payload
           cp -r "$APP_DIR" build/Payload/
-          cd build && zip -r RVPN.ipa Payload/ && cd ..
+          cd build && zip -qr RVPN.ipa Payload/ && cd ..
           ls -la build/*.ipa
 
       - name: Setup ASC API key
@@ -99,6 +157,7 @@ jobs:
             --file build/RVPN.ipa \
             --apiKey "$APPLE_API_KEY_ID" \
             --apiIssuer "$APPLE_API_ISSUER"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:

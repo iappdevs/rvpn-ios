@@ -1,0 +1,5 @@
+target/
+.build/
+*.a
+*.ipa
+.DS_Store

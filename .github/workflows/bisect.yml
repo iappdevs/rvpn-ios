@@ -1,4 +1,4 @@
-name: Bisect P12v2
+name: Bisect Rename
 on:
   workflow_dispatch:
   push:
@@ -8,8 +8,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Test p12 retry
+      - name: Test renamed secret
         env:
-          P12_BASE64: ${{ secrets.APPLE_DISTRIBUTION_P12 }}
+          P12_BASE64: ${{ secrets.TEST_P12_FILE }}
         run: |
           echo "p12 b64 length: ${#P12_BASE64}"

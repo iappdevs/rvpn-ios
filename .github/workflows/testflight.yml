@@ -89,13 +89,16 @@ jobs:
           xcrun actool --compile build/ac \
             --minimum-deployment-target 17.0 \
             --platform iphoneos \
+            --target-device iphone --target-device ipad \
             --app-icon AppIcon \
             --output-partial-info-plist build/ac_info.plist \
-            rvpn-ios-app/Assets.xcassets 2>&1 | tail -5
+            rvpn-ios-app/Assets.xcassets > actool.log 2>&1 || cat actool.log
           if [ -f build/ac/Assets.car ]; then
             cp build/ac/Assets.car "$APP_DIR/Assets.car"
+            echo "Assets.car: $(ls -la build/ac/Assets.car)"
           else
-            echo "WARNING: no Assets.car produced"
+            echo "WARNING: no Assets.car produced — actool.log follows"
+            cat actool.log
           fi
 
           # SDK build metadata Apple's validator requires (Xcode injects these

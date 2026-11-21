@@ -23,48 +23,47 @@ jobs:
           cargo build --release --target aarch64-apple-ios \
             -p rvpn-mobile --no-default-features --features ios-direct-tun
 
-      - name: Install xtool
-        run: |
-          git clone --depth 1 https://github.com/xtool-org/xtool.git /tmp/xtool-src
-          cd /tmp/xtool-src
-          swift build -c release 2>&1 | tail -5
-          sudo cp .build/release/xtool /usr/local/bin/xtool
-          xtool --version
-
-      - name: Setup iOS SDK
-        run: |
-          # On macOS, use the installed Xcode's SDK
-          xcrun --sdk iphoneos --show-sdk-path
-
-      - name: Build iOS app with xtool
+      - name: Copy library
         run: |
           mkdir -p rvpn-ios-app/Sources/rvpn-ios-app/Libs
           cp rVPN-core/rvpn/target/aarch64-apple-ios/release/librvpn_mobile.a \
              rvpn-ios-app/Sources/rvpn-ios-app/Libs/
 
+      - name: Build Swift app (destination-based)
+        run: |
           cd rvpn-ios-app
-          xtool build 2>&1 | tail -20 || {
-            echo "xtool build failed, trying swift build with destination..."
-            cat > destination.json << 'DEST'
+
+          # Create iOS destination JSON
+          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
+          cat > /tmp/ios-destination.json << DESTJSON
           {
-            "version": 1,
-            "sdk": "$(xcrun --sdk iphoneos --show-sdk-path)",
-            "target": "arm64-apple-ios17.0"
+              "version": 1,
+              "sdk": "$SDK_PATH",
+              "target": "arm64-apple-ios17.0"
           }
-          DEST
-            swift build --destination destination.json -c release 2>&1 | tail -20
-          }
+          DESTJSON
+
+          echo "=== Destination ==="
+          cat /tmp/ios-destination.json
+
+          swift build --destination /tmp/ios-destination.json -c release 2>&1 | tail -20
+
+          echo "=== Built binary ==="
+          find .build -name "rvpn-ios-app*" -type f | head -5
 
       - name: Package .ipa
         run: |
           APP_DIR="build/RVPN.app"
           mkdir -p "$APP_DIR"
 
-          # Find the built binary
           BINARY=$(find rvpn-ios-app/.build -name "rvpn-ios-app" -type f | head -1)
+          [ -z "$BINARY" ] && BINARY=$(find rvpn-ios-app/.build -name "RVPN" -type f | head -1)
+
           if [ -z "$BINARY" ]; then
-            BINARY=$(find rvpn-ios-app/.build -name "RVPN" -type f | head -1)
+            echo "ERROR: No binary found"
+            exit 1
           fi
+
           echo "Binary: $BINARY"
           cp "$BINARY" "$APP_DIR/RVPN"
 

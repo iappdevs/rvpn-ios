@@ -196,8 +196,8 @@ struct ProfilesView: View {
                 case .success(let profile):
                     state.addProfile(profile)
                     importMessage = "Imported \(profile.name)"
-                case .failure(let message):
-                    importMessage = message
+                case .failure(let error):
+                    importMessage = error.message
                 }
             }
             .alert(

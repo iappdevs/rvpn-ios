@@ -135,18 +135,23 @@ enum ProfileStore {
         try? FileManager.default.removeItem(at: profileDir(profile.slug))
     }
 
+    /// Human-readable import failure.
+    struct ImportError: Error {
+        let message: String
+    }
+
     /// Import a `.rvpn` document; returns the stored profile.
-    static func importDocument(_ doc: String, existing: [Profile]) -> Result<Profile, String> {
+    static func importDocument(_ doc: String, existing: [Profile]) -> Result<Profile, ImportError> {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         guard let data = doc.data(using: .utf8),
               let export = try? decoder.decode(ProfileExport.self, from: data)
-        else { return .failure("Not a valid .rvpn profile file") }
+        else { return .failure(ImportError(message: "Not a valid .rvpn profile file")) }
         guard export.format == "rvpn-profile" else {
-            return .failure("Unrecognized profile format: \(export.format)")
+            return .failure(ImportError(message: "Unrecognized profile format: \(export.format)"))
         }
         guard let address = export.profile.serverAddress, !address.isEmpty else {
-            return .failure("Profile has no server address")
+            return .failure(ImportError(message: "Profile has no server address"))
         }
 
         var slug = (export.profile.slug ?? export.profile.name ?? "profile")
@@ -176,7 +181,7 @@ enum ProfileStore {
             builtinBypassCountries: export.profile.builtinBypassCountries ?? []
         )
         guard provision(profile, prekeyContent: export.prekeyBundle, identityBase64: export.identityKey) else {
-            return .failure("The prekey bundle inside the profile is invalid")
+            return .failure(ImportError(message: "The prekey bundle inside the profile is invalid"))
         }
         return .success(profile)
     }

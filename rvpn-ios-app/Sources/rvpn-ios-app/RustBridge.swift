@@ -89,7 +89,7 @@ enum RustBridge {
     }
 
     static func stop() {
-        c_rvpn_stop()
+        _ = c_rvpn_stop()
     }
 
     /// Generate `identity.key` inside the profile directory when missing.

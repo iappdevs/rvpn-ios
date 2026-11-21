@@ -11,36 +11,63 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build Rust engine
+      - name: Install Rust
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           rustup target add aarch64-apple-ios
+
+      - name: Build Rust engine
+        run: |
           cd rVPN-core/rvpn
           cargo build --release --target aarch64-apple-ios \
             -p rvpn-mobile --no-default-features --features ios-direct-tun
 
-      - name: Compile Swift app
+      - name: Install xtool
         run: |
-          mkdir -p build
-          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-          swiftc \
-            -target arm64-apple-ios17.0 \
-            -sdk "$SDK" \
-            \
-            -emit-executable \
-            -framework SwiftUI \
-            -o build/RVPN \
-            rvpn-ios-app/Sources/rvpn-ios-app/*.swift
-          echo "=== Binary ==="
-          file build/RVPN
-          ls -la build/RVPN
+          git clone --depth 1 https://github.com/xtool-org/xtool.git /tmp/xtool-src
+          cd /tmp/xtool-src
+          swift build -c release 2>&1 | tail -5
+          sudo cp .build/release/xtool /usr/local/bin/xtool
+          xtool --version
+
+      - name: Setup iOS SDK
+        run: |
+          # On macOS, use the installed Xcode's SDK
+          xcrun --sdk iphoneos --show-sdk-path
+
+      - name: Build iOS app with xtool
+        run: |
+          mkdir -p rvpn-ios-app/Sources/rvpn-ios-app/Libs
+          cp rVPN-core/rvpn/target/aarch64-apple-ios/release/librvpn_mobile.a \
+             rvpn-ios-app/Sources/rvpn-ios-app/Libs/
+
+          cd rvpn-ios-app
+          xtool build 2>&1 | tail -20 || {
+            echo "xtool build failed, trying swift build with destination..."
+            cat > destination.json << 'DEST'
+          {
+            "version": 1,
+            "sdk": "$(xcrun --sdk iphoneos --show-sdk-path)",
+            "target": "arm64-apple-ios17.0"
+          }
+          DEST
+            swift build --destination destination.json -c release 2>&1 | tail -20
+          }
 
       - name: Package .ipa
         run: |
           APP_DIR="build/RVPN.app"
           mkdir -p "$APP_DIR"
-          cp build/RVPN "$APP_DIR/"
+
+          # Find the built binary
+          BINARY=$(find rvpn-ios-app/.build -name "rvpn-ios-app" -type f | head -1)
+          if [ -z "$BINARY" ]; then
+            BINARY=$(find rvpn-ios-app/.build -name "RVPN" -type f | head -1)
+          fi
+          echo "Binary: $BINARY"
+          cp "$BINARY" "$APP_DIR/RVPN"
+
           cat > "$APP_DIR/Info.plist" << 'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -61,7 +88,6 @@ jobs:
           mkdir -p build/Payload
           cp -r "$APP_DIR" build/Payload/
           cd build && zip -r RVPN.ipa Payload/ && cd ..
-          echo "=== IPA ==="
           ls -la build/*.ipa
 
       - name: Setup ASC API key

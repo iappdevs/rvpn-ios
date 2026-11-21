@@ -63,11 +63,44 @@ jobs:
           fi
           tail -3 build.log
 
+      - name: Build tunnel provider with xcodebuild
+        run: |
+          cd rvpn-ios-app
+          xcodebuild -list > /dev/null 2>&1 || true
+          sleep 3
+          set +e
+          xcodebuild \
+            -scheme rvpn-tunnel-provider \
+            -destination "generic/platform=iOS" \
+            -configuration Release \
+            -derivedDataPath build \
+            build > tunnel.log 2>&1
+          STATUS=$?
+          if [ $STATUS -ne 0 ] && grep -q "does not contain a scheme" tunnel.log; then
+            sleep 5
+            xcodebuild -list > /dev/null 2>&1 || true
+            xcodebuild \
+              -scheme rvpn-tunnel-provider \
+              -destination "generic/platform=iOS" \
+              -configuration Release \
+              -derivedDataPath build \
+              build > tunnel.log 2>&1
+            STATUS=$?
+          fi
+          set -e
+          if [ $STATUS -ne 0 ]; then
+            echo "=== tunnel errors ==="
+            grep -B1 -A3 "error:" tunnel.log | head -40
+            exit $STATUS
+          fi
+          tail -3 tunnel.log
+
       - name: Set up code signing
         env:
           P12_BASE64: ${{ secrets.APPLE_DEV_P12 }}
           P12_PASSWORD: ${{ secrets.APPLE_DEV_P12_PASSWORD }}
           PROFILE_BASE64: ${{ secrets.APPLE_DEV_PROFILE }}
+          TUNNEL_PROFILE_BASE64: ${{ secrets.APPLE_TUNNEL_PROFILE }}
         run: |
           KEYCHAIN_PASSWORD=tempkeychain
           security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain-db
@@ -80,6 +113,7 @@ jobs:
           security list-keychain -d user -s build.keychain-db
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           echo "$PROFILE_BASE64" | base64 -d > ~/Library/MobileDevice/Provisioning\ Profiles/rvpn-dev.mobileprovision
+          echo "$TUNNEL_PROFILE_BASE64" | base64 -d > ~/Library/MobileDevice/Provisioning\ Profiles/rvpn-tunnel.mobileprovision
           security find-identity -v -p codesigning build.keychain-db
 
       - name: Package and sign dev .ipa
@@ -94,6 +128,61 @@ jobs:
           BINARY=$(find rvpn-ios-app/build rvpn-ios-app/.build -name "rvpn-ios-app" -type f 2>/dev/null | head -1)
           if [ -z "$BINARY" ]; then echo "ERROR: No binary found"; exit 1; fi
           cp "$BINARY" "$APP_DIR/RVPN"
+
+          TUNNEL_BIN=$(find rvpn-ios-app/build rvpn-ios-app/.build -name "rvpn-tunnel-provider" -type f 2>/dev/null | head -1)
+          if [ -z "$TUNNEL_BIN" ]; then echo "ERROR: No tunnel binary found"; exit 1; fi
+          APPEX="$APP_DIR/PlugIns/RVPN Tunnel.appex"
+          mkdir -p "$APPEX"
+          cp "$TUNNEL_BIN" "$APPEX/RVPN Tunnel"
+          cat > "$APPEX/Info.plist" << APEXPLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleExecutable</key><string>RVPN Tunnel</string>
+              <key>CFBundleIdentifier</key><string>org.rvpn.ios.tunnel</string>
+              <key>CFBundleName</key><string>RVPN Tunnel</string>
+              <key>CFBundleDisplayName</key><string>RVPN Tunnel</string>
+              <key>CFBundleVersion</key><string>${BUILD_NUMBER}</string>
+              <key>CFBundleShortVersionString</key><string>0.1.0</string>
+              <key>CFBundlePackageType</key><string>XPC!</string>
+              <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
+              <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+              <key>CFBundleDevelopmentRegion</key><string>en</string>
+              <key>MinimumOSVersion</key><string>17.0</string>
+              <key>DTPlatformName</key><string>iphoneos</string>
+              <key>DTPlatformVersion</key><string>${SDK_VERSION}</string>
+              <key>NSExtension</key>
+              <dict>
+                  <key>NSExtensionPointIdentifier</key><string>com.apple.networkextension.packet-tunnel</string>
+                  <key>NSExtensionPrincipalClass</key><string>rvpn_tunnel_provider.RVPNTunnelProvider</string>
+              </dict>
+          </dict>
+          </plist>
+          APEXPLIST
+          cp ~/Library/MobileDevice/Provisioning\ Profiles/rvpn-tunnel.mobileprovision \
+             "$APPEX/embedded.mobileprovision"
+          printf 'XPC!' > "$APPEX/PkgInfo"
+
+          cat > tunnel-entitlements.plist << PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>application-identifier</key><string>${APPLE_TEAM_ID}.org.rvpn.ios.tunnel</string>
+              <key>com.apple.developer.team-identifier</key><string>${APPLE_TEAM_ID}</string>
+              <key>get-task-allow</key><true/>
+              <key>com.apple.developer.networking.networkextension</key>
+              <array><string>packet-tunnel-provider</string></array>
+          </dict>
+          </plist>
+          PLIST
+          codesign --force --identifier org.rvpn.ios.tunnel \
+            --sign "Apple Development" \
+            --entitlements tunnel-entitlements.plist \
+            --timestamp "$APPEX"
+          codesign --verify --verbose=2 "$APPEX"
+          echo "APPEX SIGNED"
 
           mkdir -p build/ac
           xcrun actool --compile build/ac \
@@ -175,6 +264,8 @@ jobs:
               <key>application-identifier</key><string>${APPLE_TEAM_ID}.org.rvpn.ios</string>
               <key>com.apple.developer.team-identifier</key><string>${APPLE_TEAM_ID}</string>
               <key>get-task-allow</key><true/>
+              <key>com.apple.developer.networking.networkextension</key>
+              <array><string>packet-tunnel-provider</string></array>
           </dict>
           </plist>
           PLIST

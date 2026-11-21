@@ -85,6 +85,21 @@ final class AppState: ObservableObject {
         // Provisioning + engine start run off the main thread; the engine
         // logs and connects on its own tokio runtime.
         os_log("[RVPN] connect requested for %{public}@ (%{public}@)", type: .info, profile.name, profile.serverAddress)
+        VPNManager.connect(profile: profile) { [weak self] error in
+            Task { @MainActor in
+                if let error {
+                    os_log("[RVPN] system tunnel unavailable (%{public}@) — in-app engine fallback", type: .error, error)
+                    self?.startInAppEngine(profile: profile)
+                } else {
+                    os_log("[RVPN] using system tunnel", type: .info)
+                    self?.connectionState = .connecting
+                }
+            }
+        }
+    }
+
+    /// Direct in-process engine session (no system VPN profile).
+    private func startInAppEngine(profile: Profile) {
         let configJSON = ProfileStore.engineConfig(for: profile)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }

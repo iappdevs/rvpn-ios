@@ -185,4 +185,26 @@ enum RustBridge {
 
     /// Seconds since the last received packet (0 = no data yet).
     static var secondsSinceLastPacket: UInt64 { c_rvpn_tun_get_last_rx_time() }
+
+    // MARK: - Raw packet bridge (tunnel provider)
+
+    /// Feed one packet from the device into the engine.
+    static func writePacket(_ raw: UnsafeRawBufferPointer) -> Int32 {
+        guard let base = raw.baseAddress else { return -1 }
+        return c_rvpn_tun_write_packet(base.assumingMemoryBound(to: UInt8.self), raw.count)
+    }
+
+    /// Wait until the engine has at least one packet (1) or timeout (0).
+    static func waitForPacket(timeoutMs: UInt64) -> Int32 {
+        c_rvpn_tun_wait_for_packet(timeoutMs)
+    }
+
+    /// Drain one engine packet into `buffer`; returns its length (0 = none).
+    static func readPacket(into buffer: inout [UInt8]) -> Int {
+        var outLen = 0
+        let rc = buffer.withUnsafeMutableBufferPointer { raw in
+            c_rvpn_tun_read_packet(raw.baseAddress, raw.count, &outLen)
+        }
+        return rc == 0 ? outLen : 0
+    }
 }

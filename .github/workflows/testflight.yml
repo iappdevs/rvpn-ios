@@ -3,7 +3,7 @@ name: TestFlight Upload
 on:
   workflow_dispatch:
   push:
-    tags: ['v*']
+    branches: [main]
 
 jobs:
   build-and-upload:
@@ -11,19 +11,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
+      - name: Build Rust engine
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           rustup target add aarch64-apple-ios
-
-      - name: Build Rust engine
-        run: |
           cd rVPN-core/rvpn
           cargo build --release --target aarch64-apple-ios \
             -p rvpn-mobile --no-default-features --features ios-direct-tun
 
-      - name: Compile Swift app directly with swiftc
+      - name: Compile Swift app
         run: |
           mkdir -p build
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
@@ -32,13 +29,9 @@ jobs:
             -sdk "$SDK" \
             -parse-as-library \
             -emit-executable \
+            -framework SwiftUI \
             -o build/RVPN \
-            -L rvpn-ios-app/Sources/rvpn-ios-app/Libs \
-            -lrvpn_mobile \
-            -lc++ \
-            -framework NetworkExtension \
-            -framework Network \
-            rvpn-ios-app/Sources/rvpn-ios-app/*.swift 2>&1 | tail -5
+            rvpn-ios-app/Sources/rvpn-ios-app/*.swift
           echo "=== Binary ==="
           file build/RVPN
           ls -la build/RVPN
@@ -48,7 +41,6 @@ jobs:
           APP_DIR="build/RVPN.app"
           mkdir -p "$APP_DIR"
           cp build/RVPN "$APP_DIR/"
-
           cat > "$APP_DIR/Info.plist" << 'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -69,6 +61,7 @@ jobs:
           mkdir -p build/Payload
           cp -r "$APP_DIR" build/Payload/
           cd build && zip -r RVPN.ipa Payload/ && cd ..
+          echo "=== IPA ==="
           ls -la build/*.ipa
 
       - name: Setup ASC API key

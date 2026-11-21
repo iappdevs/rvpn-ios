@@ -32,6 +32,9 @@ jobs:
       - name: Build iOS app with xcodebuild
         run: |
           cd rvpn-ios-app
+          # Force SwiftPM scheme generation first (xcodebuild races it otherwise)
+          xcodebuild -list > /dev/null 2>&1 || true
+          sleep 3
           set +e
           xcodebuild \
             -scheme rvpn-ios-app \
@@ -40,6 +43,18 @@ jobs:
             -derivedDataPath build \
             build > build.log 2>&1
           STATUS=$?
+          if [ $STATUS -ne 0 ] && grep -q "does not contain a scheme" build.log; then
+            echo "scheme race hit — retrying after regeneration"
+            sleep 5
+            xcodebuild -list > /dev/null 2>&1 || true
+            xcodebuild \
+              -scheme rvpn-ios-app \
+              -destination "generic/platform=iOS" \
+              -configuration Release \
+              -derivedDataPath build \
+              build > build.log 2>&1
+            STATUS=$?
+          fi
           set -e
           if [ $STATUS -ne 0 ]; then
             echo "=== Swift errors ==="

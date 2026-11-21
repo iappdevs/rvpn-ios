@@ -41,7 +41,9 @@ class RVPNTunnelProvider: NEPacketTunnelProvider {
         config = config.replacingOccurrences(of: "RVPN_PREKEY_PLACEHOLDER", with: prekeyURL.path)
         os_log("[RVPN-TUNNEL] key files staged in extension sandbox", type: .info)
 
-        // 1) boot the engine
+        // 1) boot the engine (verbose logs + full runtime init first)
+        setenv("RVPN_LOG_LEVEL", "info", 1)
+        RustBridge.initialize()
         if let error = RustBridge.start(configJSON: config) {
             os_log("[RVPN-TUNNEL] engine start failed: %{public}@", type: .error, error)
             completionHandler(NSError(domain: "org.rvpn.ios.tunnel", code: 2, userInfo: [NSLocalizedDescriptionKey: error]))

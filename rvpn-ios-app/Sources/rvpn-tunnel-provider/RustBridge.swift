@@ -196,8 +196,8 @@ enum RustBridge {
         c_rvpn_tun_wait_for_packet(timeoutMs)
     }
 
-    /// Drain one engine packet into `buffer`; returns its length (0 = none).
-    static func readPacket(into buffer: inout [UInt8]) -> Int {
+    /// Read one length-prefixed batch into `buffer`; returns its byte count (0 = none).
+    static func readPacketBatch(into buffer: inout [UInt8]) -> Int {
         var outLen = 0
         let rc = buffer.withUnsafeMutableBufferPointer { raw in
             c_rvpn_tun_read_packet(raw.baseAddress, raw.count, &outLen)

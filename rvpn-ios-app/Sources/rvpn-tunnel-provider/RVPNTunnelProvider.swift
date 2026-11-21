@@ -11,7 +11,8 @@ class RVPNTunnelProvider: NEPacketTunnelProvider {
     private let tunnelQueue = DispatchQueue(label: "org.rvpn.ios.tunnel")
     private let pumpGroup = DispatchGroup()
     private let trafficLock = NSLock()
-    private var transferredBytes: UInt64 = 0
+    private var uplinkQueuedBytes: UInt64 = 0
+    private var downlinkDeliveredBytes: UInt64 = 0
     private var pumpThread: Thread?
     private var tunnelID: UUID?
     private var startCompletion: ((Error?) -> Void)?
@@ -29,7 +30,8 @@ class RVPNTunnelProvider: NEPacketTunnelProvider {
             self.tunnelID = id
             self.startCompletion = completionHandler
             // The previous pump has finished before this queue accepts a new start.
-            self.transferredBytes = 0
+            self.uplinkQueuedBytes = 0
+            self.downlinkDeliveredBytes = 0
             self.startEngine(id: id)
         }
     }
@@ -152,7 +154,7 @@ class RVPNTunnelProvider: NEPacketTunnelProvider {
                 return
             }
             self.trafficLock.lock()
-            let bytes = self.transferredBytes
+            let bytes = self.uplinkQueuedBytes &+ self.downlinkDeliveredBytes
             self.trafficLock.unlock()
             let statistics = TunnelStatistics(
                 serverIP: RustBridge.serverIP,
@@ -163,12 +165,6 @@ class RVPNTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
-    private func recordTraffic(bytes: UInt64) {
-        trafficLock.lock()
-        transferredBytes &+= bytes
-        trafficLock.unlock()
-    }
-
     private func startPump(id: UUID) {
         readLoop(id: id)
         pumpGroup.enter()
@@ -176,19 +172,48 @@ class RVPNTunnelProvider: NEPacketTunnelProvider {
             defer { self.pumpGroup.leave() }
             var buffer = [UInt8](repeating: 0, count: 65536)
             while !Thread.current.isCancelled {
-                guard RustBridge.waitForPacket(timeoutMs: 250) == 1,
-                      !Thread.current.isCancelled else { continue }
-                let count = RustBridge.readPacket(into: &buffer)
-                guard count > 0 else { continue }
-                let data = Data(buffer.prefix(count))
-                if self.packetFlow.writePackets([data], withProtocols: [NSNumber(value: AF_INET)]) {
-                    self.recordTraffic(bytes: UInt64(count))
+                guard RustBridge.waitForPacket(timeoutMs: 250) == 1 else { continue }
+                // Rust coalesces wakeups, so one signal may cover several batches.
+                while !Thread.current.isCancelled {
+                    let count = RustBridge.readPacketBatch(into: &buffer)
+                    guard count > 0 else { break }
+                    self.writeDownlinkBatch(buffer.prefix(count))
                 }
             }
         }
         pumpThread = thread
         thread.name = "rvpn-pump"
         thread.start()
+    }
+
+    /// Rust puts a two-byte little-endian length in front of each IP packet.
+    private func writeDownlinkBatch(_ batch: ArraySlice<UInt8>) {
+        var remaining = batch
+        var packets: [Data] = []
+        var protocols: [NSNumber] = []
+        var bytes: UInt64 = 0
+        while !remaining.isEmpty {
+            guard remaining.count >= 2 else { return }
+            let header = remaining.startIndex
+            let length = Int(remaining[header]) | (Int(remaining[header + 1]) << 8)
+            guard length > 0, length <= remaining.count - 2 else { return }
+            let packet = remaining.dropFirst(2).prefix(length)
+            remaining = remaining.dropFirst(2 + length)
+
+            let family: Int32
+            switch packet[packet.startIndex] >> 4 {
+            case 4: family = AF_INET
+            case 6: family = AF_INET6
+            default: continue
+            }
+            packets.append(Data(packet))
+            protocols.append(NSNumber(value: family))
+            bytes += UInt64(length)
+        }
+        guard !packets.isEmpty, packetFlow.writePackets(packets, withProtocols: protocols) else { return }
+        trafficLock.lock()
+        downlinkDeliveredBytes &+= bytes
+        trafficLock.unlock()
     }
 
     /// device -> engine, re-arming after every batch.
@@ -203,7 +228,8 @@ class RVPNTunnelProvider: NEPacketTunnelProvider {
                         forwardedBytes += UInt64(packet.count)
                     }
                 }
-                self.recordTraffic(bytes: forwardedBytes)
+                // The uplink and statistics requests share tunnelQueue.
+                self.uplinkQueuedBytes &+= forwardedBytes
                 self.readLoop(id: id)
             }
         }
@@ -213,6 +239,10 @@ class RVPNTunnelProvider: NEPacketTunnelProvider {
         tunnelID = nil
         pumpThread?.cancel()
         pumpGroup.wait()
+        if pumpThread != nil {
+            os_log("[RVPN-TUNNEL] packet pump stopped: uplink queued=%llu bytes, downlink delivered=%llu bytes",
+                   type: .info, uplinkQueuedBytes, downlinkDeliveredBytes)
+        }
         pumpThread = nil
         RustBridge.stop()
     }

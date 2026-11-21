@@ -29,42 +29,34 @@ jobs:
           cp rVPN-core/rvpn/target/aarch64-apple-ios/release/librvpn_mobile.a \
              rvpn-ios-app/Sources/rvpn-ios-app/Libs/
 
-      - name: Build Swift app (destination-based)
+      - name: Build iOS app with xcodebuild
         run: |
           cd rvpn-ios-app
+          # List available schemes
+          xcodebuild -list 2>&1 | head -20
 
-          # Create iOS destination JSON
-          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
-          cat > /tmp/ios-destination.json << DESTJSON
-          {
-              "version": 1,
-              "sdk": "$SDK_PATH",
-              "target": "arm64-apple-ios17.0"
-          }
-          DESTJSON
-
-          echo "=== Destination ==="
-          cat /tmp/ios-destination.json
-
-          xcodebuild -scheme rvpn-ios-app -destination "generic/platform=iOS" -configuration Release build 2>swift build --destination /tmp/ios-destination.json -c release1|| swift build --destination /tmp/ios-destination.json -c release 2>&1 | tail -20
-
-          echo "=== Built binary ==="
-          find .build -name "rvpn-ios-app*" -type f | head -5
+          # Try building with xcodebuild
+          xcodebuild \
+            -scheme rvpn-ios-app \
+            -destination "generic/platform=iOS" \
+            -configuration Release \
+            -derivedDataPath build \
+            build 2>&1 | tail -30
 
       - name: Package .ipa
         run: |
           APP_DIR="build/RVPN.app"
           mkdir -p "$APP_DIR"
 
-          BINARY=$(find rvpn-ios-app/.build -name "rvpn-ios-app" -type f | head -1)
-          [ -z "$BINARY" ] && BINARY=$(find rvpn-ios-app/.build -name "RVPN" -type f | head -1)
+          BINARY=$(find rvpn-ios-app/build -name "rvpn-ios-app" -type f 2>/dev/null | head -1)
+          [ -z "$BINARY" ] && BINARY=$(find rvpn-ios-app/.build -name "rvpn-ios-app" -type f 2>/dev/null | head -1)
 
           if [ -z "$BINARY" ]; then
             echo "ERROR: No binary found"
             exit 1
           fi
 
-          echo "Binary: $BINARY"
+          echo "Found: $BINARY"
           cp "$BINARY" "$APP_DIR/RVPN"
 
           cat > "$APP_DIR/Info.plist" << 'PLIST'

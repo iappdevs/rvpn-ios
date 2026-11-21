@@ -146,6 +146,36 @@ jobs:
              "$APP_DIR/embedded.mobileprovision"
           printf 'APPL????' > "$APP_DIR/PkgInfo"
 
+          # Legacy icon PNGs (validators still check for pre-catalog files)
+          ICON_SRC=rvpn-ios-app/Assets.xcassets/AppIcon.appiconset/icon1024.png
+          sips -z 120 120 "$ICON_SRC" --out "$APP_DIR/AppIcon60x60@2x.png" >/dev/null
+          sips -z 180 180 "$ICON_SRC" --out "$APP_DIR/AppIcon60x60@3x.png" >/dev/null
+          sips -z 152 152 "$ICON_SRC" --out "$APP_DIR/AppIcon76x76@2x~ipad.png" >/dev/null
+          sips -z 167 167 "$ICON_SRC" --out "$APP_DIR/AppIcon83.5x83.5@2x~ipad.png" >/dev/null
+
+          # Merge actool's partial Info.plist (icon keys) the way Xcode does
+          APP_PLIST="$APP_DIR/Info.plist" PARTIAL="build/ac_info.plist" python3 - << 'PYEOF'
+          import os, plistlib
+          base = plistlib.load(open(os.environ['APP_PLIST'], 'rb'))
+          try:
+              partial = plistlib.load(open(os.environ['PARTIAL'], 'rb'))
+          except Exception as e:
+              print('no partial plist:', e)
+              partial = {}
+          merged = []
+          for k, v in partial.items():
+              if 'Icon' in k or k == 'UIRequiredDeviceCapabilities':
+                  base[k] = v
+                  merged.append(k)
+          plistlib.dump(base, open(os.environ['APP_PLIST'], 'wb'))
+          print('merged icon keys from actool:', merged)
+          PYEOF
+          # Explicit CFBundleIcons entries pointing at the legacy PNGs
+          plutil -insert CFBundleIcons -json '{"CFBundlePrimaryIcon":{"CFBundleIconName":"AppIcon","CFBundleIconFiles":["AppIcon60x60","AppIcon76x76"]}}' "$APP_DIR/Info.plist" 2>/dev/null || \
+          plutil -replace CFBundleIcons -json '{"CFBundlePrimaryIcon":{"CFBundleIconName":"AppIcon","CFBundleIconFiles":["AppIcon60x60","AppIcon76x76"]}}' "$APP_DIR/Info.plist"
+          echo "=== final Info.plist ==="
+          plutil -p "$APP_DIR/Info.plist" | grep -iE "icon|version" || true
+
           cat > entitlements.plist << PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

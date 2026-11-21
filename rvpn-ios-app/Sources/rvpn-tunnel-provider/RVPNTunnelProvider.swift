@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Network
 import NetworkExtension
 import os
 
@@ -8,7 +9,18 @@ import os
 /// Bridges the system utun device to the Rust rVPN engine:
 /// packetFlow reads -> rvpn_tun_write_packet, engine -> packetFlow writes.
 class RVPNTunnelProvider: NEPacketTunnelProvider {
-    private let tunnelQueue = DispatchQueue(label: "org.rvpn.ios.tunnel")
+    private struct Assignment: Equatable {
+        let address: String
+        let mtu: Int32
+        let serverIP: String?
+    }
+
+    private struct NetworkPath: Equatable {
+        let available: Bool
+        let interfaces: [String]
+    }
+
+    private let tunnelQueue = DispatchQueue(label: "org.rvpn.ios.tunnel", autoreleaseFrequency: .workItem)
     private let pumpGroup = DispatchGroup()
     private let trafficLock = NSLock()
     private var uplinkQueuedBytes: UInt64 = 0
@@ -16,6 +28,12 @@ class RVPNTunnelProvider: NEPacketTunnelProvider {
     private var pumpThread: Thread?
     private var tunnelID: UUID?
     private var startCompletion: ((Error?) -> Void)?
+    private var appliedAssignment: Assignment?
+    private var applyingSettings = false
+    private var pathMonitor: NWPathMonitor?
+    private var networkPath: NetworkPath?
+    private var recoveryTimer: DispatchSourceTimer?
+    private var reconnectGraceUntil = DispatchTime.now()
 
     override func startTunnel(
         options: [String: NSObject]? = nil,
@@ -88,12 +106,9 @@ class RVPNTunnelProvider: NEPacketTunnelProvider {
 
     private func waitForAssignment(id: UUID, deadline: DispatchTime, dnsServers: [String]?) {
         guard tunnelID == id else { return }
-        if RustBridge.engineState == .connected, let ip = RustBridge.tunnelIP {
-            let mtu = RustBridge.mtu
-            if mtu > 0 {
-                applyNetworkSettings(id: id, address: ip, mtu: mtu, dnsServers: dnsServers)
-                return
-            }
+        if let assignment = currentAssignment() {
+            applyNetworkSettings(id: id, assignment: assignment, dnsServers: dnsServers)
+            return
         }
         guard DispatchTime.now() < deadline else {
             finishStart(tunnelError("VPN server did not assign a tunnel address within 20 seconds"))
@@ -104,10 +119,18 @@ class RVPNTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
-    private func applyNetworkSettings(id: UUID, address: String, mtu: Int32, dnsServers: [String]?) {
-        let serverIP = RustBridge.serverIP
+    private func currentAssignment() -> Assignment? {
+        guard RustBridge.engineState == .connected, let address = RustBridge.tunnelIP else { return nil }
+        let mtu = RustBridge.mtu
+        guard mtu > 0 else { return nil }
+        return Assignment(address: address, mtu: mtu, serverIP: RustBridge.serverIP)
+    }
+
+    private func applyNetworkSettings(id: UUID, assignment: Assignment, dnsServers: [String]?) {
+        applyingSettings = true
+        let serverIP = assignment.serverIP
         let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: serverIP ?? "127.0.0.1")
-        let ipv4 = NEIPv4Settings(addresses: [address], subnetMasks: ["255.255.255.255"])
+        let ipv4 = NEIPv4Settings(addresses: [assignment.address], subnetMasks: ["255.255.255.255"])
         ipv4.includedRoutes = [NEIPv4Route.default()]
         var ipv4Address = in_addr()
         if let serverIP, inet_pton(AF_INET, serverIP, &ipv4Address) == 1 {
@@ -116,20 +139,84 @@ class RVPNTunnelProvider: NEPacketTunnelProvider {
         settings.ipv4Settings = ipv4
         let resolvers = dnsServers ?? []
         settings.dnsSettings = NEDNSSettings(servers: resolvers.isEmpty ? ["1.1.1.1", "8.8.8.8"] : resolvers)
-        settings.mtu = NSNumber(value: mtu)
+        settings.mtu = NSNumber(value: assignment.mtu)
 
         setTunnelNetworkSettings(settings) { error in
             self.tunnelQueue.async {
                 guard self.tunnelID == id else { return }
+                self.applyingSettings = false
                 if let error {
-                    self.finishStart(error)
+                    if self.startCompletion != nil {
+                        self.finishStart(error)
+                    } else {
+                        os_log("[RVPN-TUNNEL] could not reapply network settings: %{public}@",
+                               type: .error, error.localizedDescription)
+                    }
                     return
                 }
-                self.startPump(id: id)
-                os_log("[RVPN-TUNNEL] tunnel settings applied and packet pump running", type: .info)
-                self.finishStart(nil)
+                self.appliedAssignment = assignment
+                if self.startCompletion != nil {
+                    self.startPump(id: id)
+                    self.startRecoveryMonitoring(id: id, dnsServers: dnsServers)
+                    os_log("[RVPN-TUNNEL] tunnel settings applied and packet pump running", type: .info)
+                    self.finishStart(nil)
+                } else {
+                    self.refreshRecovery(id: id, dnsServers: dnsServers)
+                }
             }
         }
+    }
+
+    private func startRecoveryMonitoring(id: UUID, dnsServers: [String]?) {
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            guard let self, self.tunnelID == id else { return }
+            let current = NetworkPath(
+                available: path.status == .satisfied,
+                interfaces: path.availableInterfaces
+                    .filter { $0.type != .other && path.usesInterfaceType($0.type) }
+                    .map(\.name).sorted()
+            )
+            let previous = self.networkPath
+            self.networkPath = current
+            if current.available, let previous, previous != current, RustBridge.engineState == .connected {
+                // Give the Rust relay time to consume the asynchronous reconnect signal.
+                self.reconnectGraceUntil = .now() + .seconds(1)
+                RustBridge.networkChanged(true)
+            }
+            self.refreshRecovery(id: id, dnsServers: dnsServers)
+        }
+        pathMonitor = monitor
+        monitor.start(queue: tunnelQueue)
+
+        let timer = DispatchSource.makeTimerSource(queue: tunnelQueue)
+        timer.schedule(deadline: .now() + .seconds(1), repeating: .seconds(1), leeway: .milliseconds(200))
+        timer.setEventHandler { [weak self] in
+            self?.refreshRecovery(id: id, dnsServers: dnsServers)
+        }
+        recoveryTimer = timer
+        timer.resume()
+    }
+
+    private func refreshRecovery(id: UUID, dnsServers: [String]?) {
+        guard tunnelID == id else { return }
+        guard networkPath?.available != false, DispatchTime.now() >= reconnectGraceUntil,
+              let assignment = currentAssignment(), !applyingSettings else {
+            setReconnecting(true)
+            return
+        }
+        if assignment != appliedAssignment {
+            setReconnecting(true)
+            applyNetworkSettings(id: id, assignment: assignment, dnsServers: dnsServers)
+        } else {
+            setReconnecting(false)
+        }
+    }
+
+    private func setReconnecting(_ reconnecting: Bool) {
+        guard reasserting != reconnecting else { return }
+        reasserting = reconnecting
+        os_log("[RVPN-TUNNEL] %{public}@", type: .info, reconnecting ? "reconnecting" : "connection restored")
     }
 
     private func finishStart(_ error: Error?) {
@@ -170,14 +257,17 @@ class RVPNTunnelProvider: NEPacketTunnelProvider {
         pumpGroup.enter()
         let thread = Thread {
             defer { self.pumpGroup.leave() }
+            let currentThread = Thread.current
             var buffer = [UInt8](repeating: 0, count: 65536)
-            while !Thread.current.isCancelled {
+            while !currentThread.isCancelled {
                 guard RustBridge.waitForPacket(timeoutMs: 250) == 1 else { continue }
                 // Rust coalesces wakeups, so one signal may cover several batches.
-                while !Thread.current.isCancelled {
+                while !currentThread.isCancelled {
                     let count = RustBridge.readPacketBatch(into: &buffer)
                     guard count > 0 else { break }
-                    self.writeDownlinkBatch(buffer.prefix(count))
+                    autoreleasepool {
+                        self.writeDownlinkBatch(buffer.prefix(count))
+                    }
                 }
             }
         }
@@ -237,6 +327,15 @@ class RVPNTunnelProvider: NEPacketTunnelProvider {
 
     private func stopEngine() {
         tunnelID = nil
+        pathMonitor?.cancel()
+        pathMonitor = nil
+        recoveryTimer?.cancel()
+        recoveryTimer = nil
+        networkPath = nil
+        reconnectGraceUntil = .now()
+        appliedAssignment = nil
+        applyingSettings = false
+        reasserting = false
         pumpThread?.cancel()
         pumpGroup.wait()
         if pumpThread != nil {

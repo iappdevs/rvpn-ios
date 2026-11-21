@@ -108,7 +108,10 @@ struct ConnectView: View {
         VStack(spacing: 12) {
             statRow("Server", value: state.serverIP ?? "—")
             statRow("Tunnel IP", value: state.tunnelIP ?? "—")
-            statRow("Transferred", value: ByteCountFormatter.string(fromByteCount: Int64(state.transferredBytes), countStyle: .file))
+            let transferred = state.transferredBytes.map {
+                ByteCountFormatter.string(fromByteCount: Int64(clamping: $0), countStyle: .file)
+            }
+            statRow("Transferred", value: transferred ?? "—")
         }
         .padding()
         .background(RoundedRectangle(cornerRadius: 16).fill(.background))

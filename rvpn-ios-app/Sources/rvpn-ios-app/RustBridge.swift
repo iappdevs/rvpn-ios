@@ -42,9 +42,6 @@ private func c_rvpn_tun_get_server_identity() -> UnsafeMutablePointer<CChar>?
 @_silgen_name("rvpn_tun_get_mtu")
 private func c_rvpn_tun_get_mtu() -> Int32
 
-@_silgen_name("rvpn_tun_get_rss_bytes")
-private func c_rvpn_tun_get_rss_bytes() -> UInt64
-
 @_silgen_name("rvpn_tun_get_last_rx_time")
 private func c_rvpn_tun_get_last_rx_time() -> UInt64
 
@@ -182,9 +179,6 @@ enum RustBridge {
     static var serverIP: String? { takeString(c_rvpn_tun_get_server_ip()) }
     static var serverIdentity: String? { takeString(c_rvpn_tun_get_server_identity()) }
     static var mtu: Int32 { c_rvpn_tun_get_mtu() }
-
-    /// Bytes transferred through the tunnel since connect.
-    static var transferredBytes: UInt64 { c_rvpn_tun_get_rss_bytes() }
 
     /// Seconds since the last received packet (0 = no data yet).
     static var secondsSinceLastPacket: UInt64 { c_rvpn_tun_get_last_rx_time() }

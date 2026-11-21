@@ -10,6 +10,8 @@ import os
 class RVPNTunnelProvider: NEPacketTunnelProvider {
     private let tunnelQueue = DispatchQueue(label: "org.rvpn.ios.tunnel")
     private let pumpGroup = DispatchGroup()
+    private let trafficLock = NSLock()
+    private var transferredBytes: UInt64 = 0
     private var pumpThread: Thread?
     private var tunnelID: UUID?
     private var startCompletion: ((Error?) -> Void)?
@@ -26,6 +28,8 @@ class RVPNTunnelProvider: NEPacketTunnelProvider {
             let id = UUID()
             self.tunnelID = id
             self.startCompletion = completionHandler
+            // The previous pump has finished before this queue accepts a new start.
+            self.transferredBytes = 0
             self.startEngine(id: id)
         }
     }
@@ -140,6 +144,31 @@ class RVPNTunnelProvider: NEPacketTunnelProvider {
         NSError(domain: "org.rvpn.ios.tunnel", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
     }
 
+    override func handleAppMessage(_ messageData: Data, completionHandler: (@Sendable (Data?) -> Void)?) {
+        guard let completionHandler else { return }
+        tunnelQueue.async {
+            guard messageData == TunnelStatistics.request, self.tunnelID != nil, self.startCompletion == nil else {
+                completionHandler(nil)
+                return
+            }
+            self.trafficLock.lock()
+            let bytes = self.transferredBytes
+            self.trafficLock.unlock()
+            let statistics = TunnelStatistics(
+                serverIP: RustBridge.serverIP,
+                tunnelIP: RustBridge.tunnelIP,
+                transferredBytes: bytes
+            )
+            completionHandler(try? JSONEncoder().encode(statistics))
+        }
+    }
+
+    private func recordTraffic(bytes: UInt64) {
+        trafficLock.lock()
+        transferredBytes &+= bytes
+        trafficLock.unlock()
+    }
+
     private func startPump(id: UUID) {
         readLoop(id: id)
         pumpGroup.enter()
@@ -152,7 +181,9 @@ class RVPNTunnelProvider: NEPacketTunnelProvider {
                 let count = RustBridge.readPacket(into: &buffer)
                 guard count > 0 else { continue }
                 let data = Data(buffer.prefix(count))
-                _ = self.packetFlow.writePackets([data], withProtocols: [NSNumber(value: AF_INET)])
+                if self.packetFlow.writePackets([data], withProtocols: [NSNumber(value: AF_INET)]) {
+                    self.recordTraffic(bytes: UInt64(count))
+                }
             }
         }
         pumpThread = thread
@@ -166,11 +197,13 @@ class RVPNTunnelProvider: NEPacketTunnelProvider {
             guard let self else { return }
             self.tunnelQueue.async {
                 guard self.tunnelID == id else { return }
+                var forwardedBytes: UInt64 = 0
                 for packet in packets {
-                    packet.withUnsafeBytes { raw in
-                        _ = RustBridge.writePacket(raw)
+                    if packet.withUnsafeBytes(RustBridge.writePacket) == 0 {
+                        forwardedBytes += UInt64(packet.count)
                     }
                 }
+                self.recordTraffic(bytes: forwardedBytes)
                 self.readLoop(id: id)
             }
         }

@@ -33,10 +33,11 @@ final class AppState: ObservableObject {
     @Published var connectionState: ConnectionState = .disconnected
     @Published var tunnelIP: String?
     @Published var serverIP: String?
-    @Published var transferredBytes: UInt64 = 0
+    @Published var transferredBytes: UInt64?
     @Published var lastError: String?
 
     private var statsTimer: Timer?
+    private var statisticsRequest: (id: UUID, deadline: DispatchTime)?
     private var vpnManager: NETunnelProviderManager?
     private var vpnSetup: Task<Void, Never>?
     private var systemVPNObserver: NSObjectProtocol?
@@ -53,15 +54,16 @@ final class AppState: ObservableObject {
         setenv("RVPN_LOG_LEVEL", "info", 1)
         RustBridge.initialize()
         os_log("[RVPN] app init (engine runtime up, RVPN_LOG_LEVEL=info)", type: .info)
+        startStatsPolling()
         if VPNManager.extensionAvailable {
             observeSystemVPN()
         } else {
-            startStatsPolling()
             observeLifecycle()
         }
     }
 
     deinit {
+        statsTimer?.invalidate()
         if let systemVPNObserver {
             NotificationCenter.default.removeObserver(systemVPNObserver)
         }
@@ -149,10 +151,15 @@ final class AppState: ObservableObject {
     }
 
     private func refreshSystemVPN(_ connection: NEVPNConnection) {
-        switch connection.status {
+        let status = connection.status
+        if status != .connected {
+            clearStatistics()
+        }
+        switch status {
         case .connected:
             lastError = nil
             connectionState = .connected
+            requestTunnelStatistics()
         case .connecting, .reasserting:
             connectionState = .connecting
         case .disconnecting:
@@ -199,6 +206,7 @@ final class AppState: ObservableObject {
 
     func disconnect() {
         os_log("[RVPN] disconnect requested", type: .info)
+        clearStatistics()
         if VPNManager.extensionAvailable {
             vpnSetup?.cancel()
             guard let connection = vpnManager?.connection else {
@@ -213,9 +221,6 @@ final class AppState: ObservableObject {
         RustBridge.stopPump()
         RustBridge.stop()
         connectionState = .disconnected
-        tunnelIP = nil
-        serverIP = nil
-        transferredBytes = 0
     }
 
     /// Probe the active profile's server without establishing a session.
@@ -257,8 +262,52 @@ final class AppState: ObservableObject {
 
     private func startStatsPolling() {
         statsTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refreshState() }
+            Task { @MainActor in
+                if VPNManager.extensionAvailable {
+                    self?.requestTunnelStatistics()
+                } else {
+                    self?.refreshState()
+                }
+            }
         }
+    }
+
+    private func requestTunnelStatistics() {
+        guard connectionState == .connected,
+              let session = vpnManager?.connection as? NETunnelProviderSession,
+              session.status == .connected else { return }
+        let now = DispatchTime.now()
+        if let statisticsRequest, statisticsRequest.deadline > now { return }
+
+        let id = UUID()
+        statisticsRequest = (id, now + .seconds(3))
+        do {
+            try session.sendProviderMessage(TunnelStatistics.request) { [weak self, weak session] data in
+                Task { @MainActor in
+                    guard let self, self.statisticsRequest?.id == id else { return }
+                    self.statisticsRequest = nil
+                    guard let session, self.connectionState == .connected, session.status == .connected,
+                          self.vpnManager?.connection === session,
+                          let data, let statistics = try? JSONDecoder().decode(TunnelStatistics.self, from: data)
+                    else { return }
+
+                    let configuration = self.vpnManager?.protocolConfiguration as? NETunnelProviderProtocol
+                    let configuredHost = configuration?.serverAddress.flatMap { URL(string: $0)?.host }
+                    self.serverIP = statistics.serverIP ?? configuredHost
+                    self.tunnelIP = statistics.tunnelIP
+                    self.transferredBytes = statistics.transferredBytes
+                }
+            }
+        } catch {
+            statisticsRequest = nil
+        }
+    }
+
+    private func clearStatistics() {
+        statisticsRequest = nil
+        tunnelIP = nil
+        serverIP = nil
+        transferredBytes = nil
     }
 
     /// Poll cycle counter so periodic state lines stay identifiable.
@@ -266,7 +315,6 @@ final class AppState: ObservableObject {
 
     private func refreshState() {
         let engine = RustBridge.engineState
-        let rx = RustBridge.transferredBytes
         let ip = RustBridge.tunnelIP
         AppState.pollCount &+= 1
         let engineLabel = String(describing: engine)
@@ -283,16 +331,15 @@ final class AppState: ObservableObject {
                 ? .disconnected : connectionState
         }
         if derived != connectionState {
-            os_log("[RVPN] ui-state %{public}@ -> %{public}@ (engine=%{public}@ ip=%{public}@ rx=%llu)",
-                   type: .info, connectionState.label, derived.label, engineLabel, ip ?? "-", rx)
+            os_log("[RVPN] ui-state %{public}@ -> %{public}@ (engine=%{public}@ ip=%{public}@)",
+                   type: .info, connectionState.label, derived.label, engineLabel, ip ?? "-")
             connectionState = derived
         }
         if AppState.pollCount % 10 == 0 {
-            os_log("[RVPN] tick engine=%{public}@ ip=%{public}@ rx=%llu",
-                   type: .debug, engineLabel, ip ?? "-", rx)
+            os_log("[RVPN] tick engine=%{public}@ ip=%{public}@",
+                   type: .debug, engineLabel, ip ?? "-")
         }
         tunnelIP = ip
         serverIP = RustBridge.serverIP
-        transferredBytes = rx
     }
 }

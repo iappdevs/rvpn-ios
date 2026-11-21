@@ -17,6 +17,7 @@ targets:
     platform: iOS
     sources:
       - path: Sources/rvpn-tunnel-provider
+      - path: Sources/rvpn-ios-app/TunnelStatistics.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.rvpn.ios.tunnel

@@ -1,0 +1,184 @@
+name: Dev Deploy
+
+# Development-signed build for direct device installs (ideviceinstaller),
+# used by the remote-debug loop — no TestFlight involved.
+on:
+  workflow_dispatch:
+
+jobs:
+  build-dev:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          rustup target add aarch64-apple-ios
+
+      - name: Build Rust engine
+        run: |
+          cd rVPN-core/rvpn
+          cargo build --release --target aarch64-apple-ios \
+            -p rvpn-mobile --no-default-features --features ios-direct-tun
+
+      - name: Copy library
+        run: |
+          mkdir -p rvpn-ios-app/Sources/rvpn-ios-app/Libs
+          cp rVPN-core/rvpn/target/aarch64-apple-ios/release/librvpn_mobile.a \
+             rvpn-ios-app/Sources/rvpn-ios-app/Libs/
+
+      - name: Build iOS app with xcodebuild
+        run: |
+          cd rvpn-ios-app
+          set +e
+          xcodebuild \
+            -scheme rvpn-ios-app \
+            -destination "generic/platform=iOS" \
+            -configuration Release \
+            -derivedDataPath build \
+            build > build.log 2>&1
+          STATUS=$?
+          set -e
+          if [ $STATUS -ne 0 ]; then
+            echo "=== Swift errors ==="
+            grep -B1 -A3 "error:" build.log | head -60
+            exit $STATUS
+          fi
+          tail -3 build.log
+
+      - name: Set up code signing
+        env:
+          P12_BASE64: ${{ secrets.APPLE_DEV_P12 }}
+          P12_PASSWORD: ${{ secrets.APPLE_DEV_P12_PASSWORD }}
+          PROFILE_BASE64: ${{ secrets.APPLE_DEV_PROFILE }}
+        run: |
+          KEYCHAIN_PASSWORD=tempkeychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain-db
+          security default-keychain -s build.keychain-db
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain-db
+          security set-keychain-settings -t 3600 -u build.keychain-db
+          echo "$P12_BASE64" | base64 -d > cert.p12
+          security import cert.p12 -k build.keychain-db -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" build.keychain-db
+          security list-keychain -d user -s build.keychain-db
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          echo "$PROFILE_BASE64" | base64 -d > ~/Library/MobileDevice/Provisioning\ Profiles/rvpn-dev.mobileprovision
+          security find-identity -v -p codesigning build.keychain-db
+
+      - name: Package and sign dev .ipa
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          rm -rf build
+          APP_DIR="build/RVPN.app"
+          mkdir -p "$APP_DIR"
+
+          BINARY=$(find rvpn-ios-app/build rvpn-ios-app/.build -name "rvpn-ios-app" -type f 2>/dev/null | head -1)
+          if [ -z "$BINARY" ]; then echo "ERROR: No binary found"; exit 1; fi
+          cp "$BINARY" "$APP_DIR/RVPN"
+
+          mkdir -p build/ac
+          xcrun actool --compile build/ac \
+            --minimum-deployment-target 17.0 \
+            --platform iphoneos \
+            --target-device iphone \
+            --app-icon AppIcon \
+            --output-partial-info-plist build/ac_info.plist \
+            rvpn-ios-app/Assets.xcassets > actool.log 2>&1 || cat actool.log
+          [ -f build/ac/Assets.car ] && cp build/ac/Assets.car "$APP_DIR/Assets.car"
+
+          SDK_VERSION=$(xcrun --sdk iphoneos --show-sdk-version)
+          SDK_BUILD=$(xcrun --sdk iphoneos --show-sdk-build-version)
+          XCODE_VERSION=$(xcodebuild -version | awk 'NR==1{print $2}')
+          XCODE_BUILD=$(xcodebuild -version | awk 'NR==2{print $3}')
+          DTXCODE=$(echo "$XCODE_VERSION" | awk -F. '{printf "%d%02d", $1, $2}')
+
+          cat > "$APP_DIR/Info.plist" << PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleExecutable</key><string>RVPN</string>
+              <key>CFBundleIdentifier</key><string>org.rvpn.ios</string>
+              <key>CFBundleName</key><string>R-VPN</string>
+              <key>CFBundleDisplayName</key><string>R-VPN</string>
+              <key>CFBundleVersion</key><string>${BUILD_NUMBER}</string>
+              <key>CFBundleShortVersionString</key><string>0.1.0</string>
+              <key>CFBundlePackageType</key><string>APPL</string>
+              <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
+              <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+              <key>CFBundleDevelopmentRegion</key><string>en</string>
+              <key>CFBundleIconName</key><string>AppIcon</string>
+              <key>MinimumOSVersion</key><string>17.0</string>
+              <key>LSRequiresIPhoneOS</key><true/>
+              <key>UIDeviceFamily</key><array><integer>1</integer></array>
+              <key>UIRequiredDeviceCapabilities</key><array><string>arm64</string></array>
+              <key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string></array>
+              <key>UILaunchScreen</key><dict/>
+              <key>ITSAppUsesNonExemptEncryption</key><false/>
+              <key>DTPlatformName</key><string>iphoneos</string>
+              <key>DTPlatformVersion</key><string>${SDK_VERSION}</string>
+              <key>DTPlatformBuild</key><string>${SDK_BUILD}</string>
+              <key>DTSDKName</key><string>iphoneos${SDK_VERSION}</string>
+              <key>DTSDKBuild</key><string>${SDK_BUILD}</string>
+              <key>DTXcode</key><string>${DTXCODE}</string>
+              <key>DTXcodeBuild</key><string>${XCODE_BUILD}</string>
+              <key>BuildMachineOSBuild</key><string>24C101</string>
+          </dict>
+          </plist>
+          PLIST
+
+          cp ~/Library/MobileDevice/Provisioning\ Profiles/rvpn-dev.mobileprovision \
+             "$APP_DIR/embedded.mobileprovision"
+          printf 'APPL????' > "$APP_DIR/PkgInfo"
+
+          APP_PLIST="$APP_DIR/Info.plist" PARTIAL="build/ac_info.plist" python3 - << 'PYEOF'
+          import os, plistlib
+          base = plistlib.load(open(os.environ['APP_PLIST'], 'rb'))
+          try:
+              partial = plistlib.load(open(os.environ['PARTIAL'], 'rb'))
+          except Exception as e:
+              print('no partial plist:', e)
+              partial = {}
+          merged = []
+          for k, v in partial.items():
+              if 'Icon' in k or k == 'UIRequiredDeviceCapabilities':
+                  base[k] = v
+                  merged.append(k)
+          plistlib.dump(base, open(os.environ['APP_PLIST'], 'wb'))
+          print('merged icon keys from actool:', merged)
+          PYEOF
+
+          cat > entitlements.plist << PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>application-identifier</key><string>${APPLE_TEAM_ID}.org.rvpn.ios</string>
+              <key>com.apple.developer.team-identifier</key><string>${APPLE_TEAM_ID}</string>
+              <key>get-task-allow</key><true/>
+          </dict>
+          </plist>
+          PLIST
+
+          codesign --force --identifier org.rvpn.ios \
+            --sign "Apple Development" \
+            --entitlements entitlements.plist \
+            --timestamp "$APP_DIR"
+          codesign --verify --verbose=2 "$APP_DIR"
+          echo "DEV SIGNATURE OK"
+
+          mkdir -p build/Payload
+          cp -r "$APP_DIR" build/Payload/
+          cd build && zip -qr RVPN-dev.ipa Payload/ && cd ..
+          ls -la build/*.ipa
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rvpn-dev-ipa
+          path: build/RVPN-dev.ipa
+          if-no-files-found: error
